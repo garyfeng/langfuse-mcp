@@ -198,7 +198,7 @@ wheels = [
 
 [[package]]
 name = "langfuse-mcp"
-version = "0.0.1.dev1+4d84037"
+version = "0.0.1.dev2+6892f22"
 source = { editable = "." }
 dependencies = [
     { name = "duckdb" },

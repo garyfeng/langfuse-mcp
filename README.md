@@ -1,47 +1,47 @@
 # Langfuse MCP Server
 
-This repository contains a Model Context Protocol (MCP) server with tools that can access the traces and metrics you've sent to Langfuse.
+This repository contains a Model Context Protocol (MCP) server with tools that can access traces and metrics stored in Langfuse, mirroring the functionality of `logfire-mcp`.
 
-This MCP server enables LLMs to retrieve your application's telemetry data, analyze distributed traces, and make use of the results of arbitrary SQL queries executed on the fetched data.
+This MCP server enables LLMs to retrieve your application's telemetry data, analyze distributed traces, and execute arbitrary SQL queries on the fetched data.
 
 ## Available Tools
 
-* `find_exceptions` - Get exception counts from spans grouped by file
-  * Required arguments:
-    * `age` (int): Number of minutes to look back (e.g., 30 for last 30 minutes, max 7 days)
+- **`find_exceptions`** - Get exception counts from spans grouped by file
+  - **Required arguments:**
+    - `age` (int): Number of minutes to look back (e.g., 30 for last 30 minutes, max 7 days)
 
-* `find_exceptions_in_file` - Get detailed span information about exceptions in a specific file
-  * Required arguments:
-    * `filepath` (string): Path to the file to analyze
-    * `age` (int): Number of minutes to look back (max 7 days)
+- **`find_exceptions_in_file`** - Get detailed span information about exceptions in a specific file
+  - **Required arguments:**
+    - `filepath` (string): Path to the file to analyze
+    - `age` (int): Number of minutes to look back (max 7 days)
 
-* `arbitrary_query` - Run custom SQL queries on your spans and events
-  * Required arguments:
-    * `query` (string): SQL query to execute on the in-memory database
-    * `age` (int): Number of minutes to look back (max 7 days)
+- **`arbitrary_query`** - Run custom SQL queries on your spans and events
+  - **Required arguments:**
+    - `query` (string): SQL query to execute on the in-memory database
+    - `age` (int): Number of minutes to look back (max 7 days)
 
-* `get_langfuse_schema` - Get the schema of the spans and events tables
-  * No required arguments
+- **`get_langfuse_schema`** - Get the schema of the spans and events tables
+  - **No required arguments**
 
 ## Setup
 
 ### Install `uv`
 
-Make sure `uv` is installed, as it is used to run the MCP server. For installation instructions, see the [uv installation docs](https://docs.astral.sh/uv/getting-started/installation/).
+Ensure `uv` is installed to manage dependencies and run the server. See the [uv installation docs](https://docs.astral.sh/uv/getting-started/installation/).
 
 ### Obtain Langfuse Credentials
 
-You need to provide your Langfuse public key and secret key. For cloud instances, find them in your project settings. For self-hosted instances, refer to your Langfuse configuration.
+You need your Langfuse public key and secret key from your project settings (cloud or self-hosted).
 
 ### Manually Run the Server
 
-Specify your keys using environment variables:
+Use environment variables:
 
 ```bash
 LANGFUSE_PUBLIC_KEY=YOUR_PUBLIC_KEY LANGFUSE_SECRET_KEY=YOUR_SECRET_KEY uvx langfuse-mcp
 ```
 
-Or using command-line flags:
+Or command-line flags:
 
 ```bash
 uvx langfuse-mcp --public-key=YOUR_PUBLIC_KEY --secret-key=YOUR_SECRET_KEY
@@ -101,74 +101,74 @@ Add to your Cline settings in `cline_mcp_settings.json`:
 }
 ```
 
-### Customization - Base URL
+### Customization - Host URL
 
-By default, the server connects to the Langfuse API at `https://cloud.langfuse.com`. Override this by:
+Default API endpoint is `https://cloud.langfuse.com`. Override it with:
 
-1. Using the `--base-url` argument:
-```bash
-uvx langfuse-mcp --base-url=https://your-langfuse-instance.com
-```
+1. Command-line argument:
+   ```bash
+   uvx langfuse-mcp --host=https://your-langfuse-instance.com
+   ```
 
-2. Setting the environment variable:
-```bash
-LANGFUSE_BASE_URL=https://your-langfuse-instance.com uvx langfuse-mcp
-```
+2. Environment variable:
+   ```bash
+   LANGFUSE_HOST=https://your-langfuse-instance.com uvx langfuse-mcp
+   ```
 
 ## Example Interactions
 
 1. **Find exceptions in the last hour:**
-```json
-{
-  "name": "find_exceptions",
-  "arguments": {
-    "age": 60
-  }
-}
-```
-**Response:**
-```json
-[
-  {"filepath": "app/main.py", "count": 5},
-  {"filepath": "utils/helper.py", "count": 3}
-]
-```
+   ```json
+   {
+     "name": "find_exceptions",
+     "arguments": {
+       "age": 60
+     }
+   }
+   ```
+   **Response:**
+   ```json
+   [
+     {"filepath": "app/main.py", "count": 5},
+     {"filepath": "utils/helper.py", "count": 3}
+   ]
+   ```
 
 2. **Get exception details in a file:**
-```json
-{
-  "name": "find_exceptions_in_file",
-  "arguments": {
-    "filepath": "app/main.py",
-    "age": 1440
-  }
-}
-```
-**Response:**
-```json
-[
-  {
-    "created_at": "2024-10-15T10:00:00Z",
-    "message": "Division by zero",
-    "exception_type": "ZeroDivisionError",
-    "function_name": "divide",
-    "line_number": "45",
-    "trace_id": "abc123",
-    "span_id": "def456"
-  }
-]
-```
+   ```json
+   {
+     "name": "find_exceptions_in_file",
+     "arguments": {
+       "filepath": "app/main.py",
+       "age": 1440
+     }
+   }
+   ```
+   **Response:**
+   ```json
+   [
+     {
+       "timestamp": "2024-10-15T10:00:00Z",
+       "message": "Division by zero",
+       "exception_type": "ZeroDivisionError",
+       "function_name": "divide",
+       "line_number": "45",
+       "trace_id": "abc123",
+       "span_id": "def456"
+     }
+   ]
+   ```
 
 3. **Run a custom query:**
-```json
-{
-  "name": "arbitrary_query",
-  "arguments": {
-    "query": "SELECT id, trace_id, name FROM spans WHERE name = 'process_data' LIMIT 10",
-    "age": 1440
-  }
-}
-```
+   ```json
+   {
+     "name": "arbitrary_query",
+     "arguments": {
+       "query": "SELECT id, trace_id, name FROM spans WHERE name = 'process_data' LIMIT 10",
+       "age": 1440
+     }
+   }
+   ```
 
 ## Examples of Questions for Claude
 
