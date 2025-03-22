@@ -1,27 +1,49 @@
 # Langfuse MCP Server
 
-This repository contains a Model Context Protocol (MCP) server with tools that can access traces and metrics stored in Langfuse, mirroring the functionality of `logfire-mcp`.
+This repository contains a Model Context Protocol (MCP) server with tools that can access traces, sessions, and metrics stored in Langfuse using the Langfuse SDK.
 
-This MCP server enables LLMs to retrieve your application's telemetry data, analyze distributed traces, and execute arbitrary SQL queries on the fetched data.
+This MCP server enables LLMs to retrieve and analyze your application's telemetry data without needing to write SQL queries.
 
 ## Available Tools
 
-- **`find_exceptions`** - Get exception counts from spans grouped by file
-  - **Required arguments:**
-    - `age` (int): Number of minutes to look back (e.g., 30 for last 30 minutes, max 7 days)
+- **`find_traces`** - Retrieve traces based on filters
+  - **Arguments:**
+    - `name`: Optional[str] - Name of the trace
+    - `user_id`: Optional[str] - User ID
+    - `session_id`: Optional[str] - Session ID
+    - `version`: Optional[str] - Application version
+    - `metadata`: Optional[dict] - Metadata to filter on
+    - `from_timestamp`: Optional[datetime] - Start time (ISO 8601)
+    - `to_timestamp`: Optional[datetime] - End time (ISO 8601)
+    - `page`: int - Page number (default: 1)
+    - `limit`: int - Number of traces per page (default: 50)
 
-- **`find_exceptions_in_file`** - Get detailed span information about exceptions in a specific file
-  - **Required arguments:**
-    - `filepath` (string): Path to the file to analyze
-    - `age` (int): Number of minutes to look back (max 7 days)
+- **`find_exceptions`** - Get exception counts grouped by file, function, or type
+  - **Arguments:**
+    - `age`: int - Number of minutes to look back
+    - `group_by`: str - Field to group by ('file', 'function', 'type')
 
-- **`arbitrary_query`** - Run custom SQL queries on your spans and events
-  - **Required arguments:**
-    - `query` (string): SQL query to execute on the in-memory database
-    - `age` (int): Number of minutes to look back (max 7 days)
+- **`get_exception_details`** - Get detailed exception information for a trace or span
+  - **Arguments:**
+    - `trace_id`: str - ID of the trace
+    - `span_id`: Optional[str] - ID of the span (if specified, get exceptions for that span only)
 
-- **`get_langfuse_schema`** - Get the schema of the spans and events tables
-  - **No required arguments**
+- **`get_session`** - Retrieve a session by ID
+  - **Arguments:**
+    - `session_id`: str - ID of the session
+
+- **`get_user_sessions`** - Retrieve sessions for a user within a time range
+  - **Arguments:**
+    - `user_id`: str - ID of the user
+    - `from_timestamp`: Optional[datetime] - Start time (ISO 8601)
+    - `to_timestamp`: Optional[datetime] - End time (ISO 8601)
+
+- **`get_error_count`** - Get the number of traces with exceptions within the last N minutes
+  - **Arguments:**
+    - `age`: int - Number of minutes to look back
+
+- **`get_data_schema`** - Get the schema of trace, span, and event objects
+  - **No arguments**
 
 ## Setup
 
@@ -33,18 +55,33 @@ Ensure `uv` is installed to manage dependencies and run the server. See the [uv 
 
 You need your Langfuse public key and secret key from your project settings (cloud or self-hosted).
 
+### Install with `uv`
+
+```bash
+uv pip install langfuse-mcp
+```
+
 ### Manually Run the Server
 
 Use environment variables:
 
 ```bash
-LANGFUSE_PUBLIC_KEY=YOUR_PUBLIC_KEY LANGFUSE_SECRET_KEY=YOUR_SECRET_KEY uvx langfuse-mcp
+LANGFUSE_PUBLIC_KEY=YOUR_PUBLIC_KEY LANGFUSE_SECRET_KEY=YOUR_SECRET_KEY uv run -m langfuse_mcp
 ```
 
 Or command-line flags:
 
 ```bash
-uvx langfuse-mcp --public-key=YOUR_PUBLIC_KEY --secret-key=YOUR_SECRET_KEY
+uv run -m langfuse_mcp --public-key=YOUR_PUBLIC_KEY --secret-key=YOUR_SECRET_KEY
+```
+
+You can also run directly from source:
+
+```bash
+git clone https://github.com/langfuse/langfuse-mcp.git
+cd langfuse-mcp
+uv pip install -e .
+uv run -m langfuse_mcp --public-key=YOUR_PUBLIC_KEY --secret-key=YOUR_SECRET_KEY
 ```
 
 ## Configuration with MCP Clients
@@ -57,8 +94,8 @@ Create a `.cursor/mcp.json` file in your project root:
 {
   "mcpServers": {
     "langfuse": {
-      "command": "uvx",
-      "args": ["langfuse-mcp", "--public-key=YOUR_PUBLIC_KEY", "--secret-key=YOUR_SECRET_KEY"]
+      "command": "uv",
+      "args": ["run", "-m", "langfuse_mcp", "--public-key=YOUR_PUBLIC_KEY", "--secret-key=YOUR_SECRET_KEY", "--host=https://cloud.langfuse.com"]
     }
   }
 }
@@ -70,12 +107,13 @@ Add to your Claude settings:
 
 ```json
 {
-  "command": ["uvx"],
-  "args": ["langfuse-mcp"],
+  "command": ["uv"],
+  "args": ["run", "-m", "langfuse_mcp"],
   "type": "stdio",
   "env": {
     "LANGFUSE_PUBLIC_KEY": "YOUR_PUBLIC_KEY",
-    "LANGFUSE_SECRET_KEY": "YOUR_SECRET_KEY"
+    "LANGFUSE_SECRET_KEY": "YOUR_SECRET_KEY",
+    "LANGFUSE_HOST": "https://cloud.langfuse.com"
   }
 }
 ```
@@ -88,8 +126,8 @@ Add to your Cline settings in `cline_mcp_settings.json`:
 {
   "mcpServers": {
     "langfuse": {
-      "command": "uvx",
-      "args": ["langfuse-mcp"],
+      "command": "uv",
+      "args": ["run", "-m", "langfuse_mcp"],
       "env": {
         "LANGFUSE_PUBLIC_KEY": "YOUR_PUBLIC_KEY",
         "LANGFUSE_SECRET_KEY": "YOUR_SECRET_KEY"
@@ -103,44 +141,85 @@ Add to your Cline settings in `cline_mcp_settings.json`:
 
 ### Customization - Host URL
 
-Default API endpoint is `https://cloud.langfuse.com`. Override it with:
+The default API endpoint is `https://cloud.langfuse.com` (EU region). You can override it with:
 
 1. Command-line argument:
    ```bash
-   uvx langfuse-mcp --host=https://your-langfuse-instance.com
+   uv run -m langfuse_mcp --host=https://us.cloud.langfuse.com
    ```
 
 2. Environment variable:
    ```bash
-   LANGFUSE_HOST=https://your-langfuse-instance.com uvx langfuse-mcp
+   LANGFUSE_HOST=https://us.cloud.langfuse.com uv run -m langfuse_mcp
    ```
+
+3. In your client configuration:
+   ```json
+   {
+     "mcpServers": {
+       "langfuse": {
+         "command": "uv",
+         "args": ["run", "-m", "langfuse_mcp", "--host=https://us.cloud.langfuse.com"],
+         "env": {
+           "LANGFUSE_PUBLIC_KEY": "YOUR_PUBLIC_KEY",
+           "LANGFUSE_SECRET_KEY": "YOUR_SECRET_KEY"
+         }
+       }
+     }
+   }
+   ```
+
+#### Available Regions
+
+- **EU (Default)**: `https://cloud.langfuse.com`
+- **US**: `https://us.cloud.langfuse.com`
+- **Self-hosted**: Your custom Langfuse URL (e.g., `https://langfuse.your-company.com`)
 
 ## Example Interactions
 
-1. **Find exceptions in the last hour:**
+1. **Find traces from the last hour:**
    ```json
    {
-     "name": "find_exceptions",
+     "name": "find_traces",
      "arguments": {
-       "age": 60
+       "from_timestamp": "2024-10-15T09:00:00Z",
+       "to_timestamp": "2024-10-15T10:00:00Z",
+       "limit": 10
      }
    }
    ```
    **Response:**
    ```json
    [
-     {"filepath": "app/main.py", "count": 5},
-     {"filepath": "utils/helper.py", "count": 3}
+     {"id": "trace1", "name": "trace_name", "user_id": "user123", "session_id": "session456", ...},
+     ...
    ]
    ```
 
-2. **Get exception details in a file:**
+2. **Get exception counts grouped by file:**
    ```json
    {
-     "name": "find_exceptions_in_file",
+     "name": "find_exceptions",
      "arguments": {
-       "filepath": "app/main.py",
-       "age": 1440
+       "age": 60,
+       "group_by": "file"
+     }
+   }
+   ```
+   **Response:**
+   ```json
+   [
+     {"group": "app/main.py", "count": 5},
+     {"group": "utils/helper.py", "count": 3}
+   ]
+   ```
+
+3. **Get detailed exceptions for a trace:**
+   ```json
+   {
+     "name": "get_exception_details",
+     "arguments": {
+       "trace_id": "abc123"
      }
    }
    ```
@@ -148,50 +227,100 @@ Default API endpoint is `https://cloud.langfuse.com`. Override it with:
    ```json
    [
      {
+       "observation_id": "obs123",
+       "observation_name": "process_data",
        "timestamp": "2024-10-15T10:00:00Z",
-       "message": "Division by zero",
        "exception_type": "ZeroDivisionError",
-       "function_name": "divide",
-       "line_number": "45",
-       "trace_id": "abc123",
-       "span_id": "def456"
-     }
+       "exception_message": "division by zero",
+       "stacktrace": "Traceback (most recent call last):\n  File \"app.py\", line 42...",
+       "file": "app/utils.py",
+       "function": "calculate_ratio",
+       "line_number": 42
+     },
+     ...
    ]
    ```
 
-3. **Run a custom query:**
+4. **Get error count for the last 24 hours:**
    ```json
    {
-     "name": "arbitrary_query",
+     "name": "get_error_count",
      "arguments": {
-       "query": "SELECT id, trace_id, name FROM spans WHERE name = 'process_data' LIMIT 10",
        "age": 1440
      }
    }
    ```
+   **Response:**
+   ```json
+   {
+     "error_count": 12,
+     "time_range": {
+       "from": "2024-10-14T10:00:00Z",
+       "to": "2024-10-15T10:00:00Z"
+     }
+   }
+   ```
+
+5. **Get sessions for a user:**
+   ```json
+   {
+     "name": "get_user_sessions",
+     "arguments": {
+       "user_id": "user123",
+       "from_timestamp": "2024-10-10T00:00:00Z",
+       "to_timestamp": "2024-10-15T23:59:59Z"
+     }
+   }
+   ```
+   **Response:**
+   ```json
+   [
+     {"id": "session1", "user_id": "user123", "created_at": "2024-10-12T14:22:33Z", ...},
+     {"id": "session2", "user_id": "user123", "created_at": "2024-10-13T09:15:44Z", ...}
+   ]
+   ```
 
 ## Examples of Questions for Claude
 
-1. "What exceptions occurred in spans from the last hour?"
-2. "Show recent errors in 'app/main.py' with their span context."
-3. "How many errors were there in the last 24 hours per file?"
-4. "What are the most common exception types in my spans?"
-5. "Get me the schema for spans and events."
-6. "Find all errors from yesterday and show their contexts."
+Now you can ask Claude natural language questions about your Langfuse data:
+
+1. "Show me all traces from the last 30 minutes."
+2. "What are the most common exception types in the past hour?"
+3. "Get details about exceptions in trace 'abc123'."
+4. "How many errors occurred in the last 24 hours?"
+5. "List all sessions for user 'user123' from yesterday."
+6. "What files have the most exceptions in the past week?"
+7. "Show me the stack trace for the most recent ZeroDivisionError exception."
+8. "How many unique users had errors in their sessions today?"
+9. "What's the structure of a trace object in Langfuse?"
+10. "Find all traces with the tag 'production' from the last 3 hours."
+11. "What are all the filtering options I can use with traces?"
+12. "Display a summary of exceptions by error type for the last 48 hours."
 
 ## Getting Started
 
 1. Obtain your Langfuse public and secret keys from your project settings.
-2. Run the MCP server:
+2. Install the MCP server:
    ```bash
-   uvx langfuse-mcp --public-key=YOUR_PUBLIC_KEY --secret-key=YOUR_SECRET_KEY
+   uv pip install langfuse-mcp
    ```
-3. Configure your preferred client (Cursor, Claude Desktop, or Cline).
-4. Start analyzing your Langfuse data!
+3. Run the MCP server:
+   ```bash
+   # Default EU region
+   uv run -m langfuse_mcp --public-key=YOUR_PUBLIC_KEY --secret-key=YOUR_SECRET_KEY
+   
+   # US region
+   uv run -m langfuse_mcp --public-key=YOUR_PUBLIC_KEY --secret-key=YOUR_SECRET_KEY --host=https://us.cloud.langfuse.com
+   
+   # Self-hosted
+   uv run -m langfuse_mcp --public-key=YOUR_PUBLIC_KEY --secret-key=YOUR_SECRET_KEY --host=https://your-langfuse-instance.com
+   ```
+4. Configure your preferred client (Cursor, Claude Desktop, or Cline).
+5. Start analyzing your Langfuse data!
 
 ## Contributing
 
-Contributions are welcome! Add new tools, enhance querying, or improve docs. See the [Model Context Protocol servers repository](https://github.com/modelcontextprotocol/servers) for examples.
+Contributions are welcome! Add new tools, enhance functionality, or improve docs. See the [Model Context Protocol servers repository](https://github.com/modelcontextprotocol/servers) for examples.
 
 ## License
 
