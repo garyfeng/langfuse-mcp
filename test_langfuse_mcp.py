@@ -76,8 +76,11 @@ async def main():
                         
                         # Try finding traces from the last hour
                         try:
+                            # Use the current date (which is in 2025) and look back one hour
                             now = datetime.now(timezone.utc)
                             one_hour_ago = now - timedelta(hours=1)
+                            
+                            print(f"\nQuerying traces from {one_hour_ago} to {now}")
                             
                             traces_result = await session.call_tool(
                                 "find_traces", 
@@ -107,7 +110,7 @@ async def main():
                             exceptions_result = await session.call_tool(
                                 "find_exceptions", 
                                 {
-                                    "age": 60,
+                                    "age": 60,  # Last hour
                                     "group_by": "file"
                                 }
                             )
@@ -123,33 +126,12 @@ async def main():
                             print(f"\nError finding exceptions: {e}")
                             traceback.print_exc()
                         
-                        # Try running an arbitrary query to get exceptions by type
-                        try:
-                            query_result = await session.call_tool(
-                                "arbitrary_query", 
-                                {
-                                    "age": 60,
-                                    "query": "SELECT exception_type, COUNT(*) FROM events WHERE exception_type IS NOT NULL GROUP BY exception_type"
-                                }
-                            )
-                            print("\nExceptions in the last hour grouped by type (via arbitrary query):")
-                            
-                            # Extract content using our helper function
-                            query_data = extract_content(query_result)
-                            if query_data:
-                                print(json.dumps(query_data, indent=2))
-                            else:
-                                print("No query results found or unexpected format")
-                        except Exception as e:
-                            print(f"\nError running arbitrary query: {e}")
-                            traceback.print_exc()
-                        
                         # Get the error count
                         try:
                             error_count_result = await session.call_tool(
                                 "get_error_count", 
                                 {
-                                    "age": 1440  # 24 hours
+                                    "age": 1440  # Last 24 hours
                                 }
                             )
                             print("\nError count in the last 24 hours:")
@@ -193,7 +175,7 @@ async def main():
                                         "find_exceptions_in_file", 
                                         {
                                             "filepath": filepath,
-                                            "age": 1440  # 24 hours
+                                            "age": 1440  # Last 24 hours
                                         }
                                     )
                                     
