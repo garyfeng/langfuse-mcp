@@ -1,6 +1,6 @@
-# Langfuse MCP (Model Control Plane)
+# Langfuse MCP (Model Context Protocol)
 
-This project provides a Model Control Plane (MCP) server for Langfuse, allowing AI agents to query Langfuse trace data for better debugging and observability.
+This project provides a Model Context Protocol (MCP) server for Langfuse, allowing AI agents to query Langfuse trace data for better debugging and observability.
 
 ## Features
 
@@ -19,6 +19,8 @@ This project uses dynamic versioning based on Git tags:
    - Push the tag with `git push --tags`
    - Create a GitHub release from the tag
 3. The GitHub workflow will automatically build and publish the package with the correct version to PyPI
+
+For a detailed history of changes, please see the [CHANGELOG.md](CHANGELOG.md) file.
 
 ## Development
 
@@ -202,9 +204,3 @@ def _get_cached_observation(langfuse_client, observation_id: str):
 ```
 
 This implementation automatically removes the oldest accessed items when the cache exceeds its maximum size.
-
-## Version History
-
-- 0.1.2 - Implemented dynamic versioning using uv-dynamic-versioning
-- 0.1.1 - Initial release with dynamic versioning
-- 0.1.0 - Initial public release
