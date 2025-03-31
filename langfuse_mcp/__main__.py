@@ -391,11 +391,26 @@ def process_data_with_mode(data: Any, output_mode: OUTPUT_MODE_LITERAL, base_fil
         # Save the full data to a file
         save_info = save_full_data_to_file(data, base_filename_prefix, state)
         
-        # Add file save info to the compact data
+        # Handle different data types for the response
         if isinstance(compact_data, dict):
+            # For dictionary responses, add file info directly to the dictionary
             compact_data['_file_save_info'] = save_info
             if save_info['status'] == 'success':
                 compact_data['_message'] = "Response summarized. Full details in the saved file."
+                compact_data['_full_json_file_path'] = save_info['file_path']
+        elif isinstance(compact_data, list):
+            # For list responses, wrap the list in a special structure
+            # that preserves the list while adding file info
+            result = {
+                "_type": "list_response",
+                "_items": compact_data,
+                "_count": len(compact_data),
+                "_file_save_info": save_info
+            }
+            if save_info['status'] == 'success':
+                result['_message'] = f"Response contains {len(compact_data)} items. Full details in the saved file."
+                result['_full_json_file_path'] = save_info['file_path']
+            return result
         
         return compact_data
     
@@ -611,6 +626,9 @@ async def _embed_observations_in_traces(state: MCPState, traces: List[Any]) -> N
         logger.debug(f"Embedded {len(full_observations)} observations in trace {trace.get('id', 'unknown')}")
 
 
+# Define a custom Dict type for our standardized response format
+ResponseDict = Dict[str, Any]
+
 async def fetch_traces(
     ctx: Context,
     age: int = Field(..., description="Minutes ago to start looking (e.g., 1440 for 24 hours)"),
@@ -634,7 +652,7 @@ async def fetch_traces(
             "'full_json_file': Returns a summarized JSON object AND saves the complete data to a file."
         )
     )
-) -> Union[List[dict], str]:
+) -> Union[ResponseDict, str]:
     """Find traces based on filters.
     
     Uses the Langfuse API to search for traces that match the provided filters.
@@ -656,10 +674,17 @@ async def fetch_traces(
         output_mode: Controls the output format and detail level
     
     Returns:
-        Based on output_mode:
-        - compact: List of summarized trace objects
-        - full_json_string: String containing the full JSON response
-        - full_json_file: List of summarized trace objects with file save info
+        One of the following based on output_mode:
+        - For 'compact' and 'full_json_file': A response dictionary with the structure:
+          {
+              "data": List of trace objects,
+              "metadata": {
+                  "item_count": Number of traces,
+                  "file_path": Path to saved file (only for full_json_file mode),
+                  "file_info": File save details (only for full_json_file mode)
+              }
+          }
+        - For 'full_json_string': A string containing the full JSON response
         
     Usage Tips:
         - For quick browsing: use include_observations=False with output_mode="compact"
@@ -693,10 +718,36 @@ async def fetch_traces(
         
         # Process based on output mode
         base_filename_prefix = "traces"
-        traces = process_data_with_mode(raw_traces, output_mode, base_filename_prefix, state)
+        processed_data = process_data_with_mode(raw_traces, output_mode, base_filename_prefix, state)
+        
+        # Determine file path information
+        file_path = None
+        file_info = None
+        
+        # Extract file information if available
+        if output_mode == OutputMode.FULL_JSON_FILE:
+            if isinstance(processed_data, dict) and '_file_save_info' in processed_data:
+                file_info = processed_data.get('_file_save_info')
+                file_path = processed_data.get('_full_json_file_path')
+                
+                # If it's a wrapped list response, keep the structure intact
+                if processed_data.get('_type') == 'list_response':
+                    return processed_data
         
         logger.info(f"Found {len(raw_traces)} traces, returning with output_mode={output_mode}, include_observations={include_observations}")
-        return traces
+        
+        # Return data in the standard response format
+        if output_mode == OutputMode.FULL_JSON_STRING:
+            return processed_data
+        else:
+            return {
+                "data": processed_data,
+                "metadata": {
+                    "item_count": len(raw_traces),
+                    "file_path": file_path,
+                    "file_info": file_info
+                }
+            }
     except Exception as e:
         logger.error(f"Error in fetch_traces: {str(e)}")
         logger.exception(e)
@@ -719,7 +770,7 @@ async def fetch_trace(
             "'full_json_file': Returns a summarized JSON object AND saves the complete data to a file."
         )
     )
-) -> Union[dict, str]:
+) -> Union[ResponseDict, str]:
     """Get a single trace by ID with full details.
     
     Args:
@@ -730,10 +781,16 @@ async def fetch_trace(
         output_mode: Controls the output format and detail level
     
     Returns:
-        Based on output_mode:
-        - compact: Summarized trace object
-        - full_json_string: String containing the full JSON response
-        - full_json_file: Summarized trace object with file save info
+        One of the following based on output_mode:
+        - For 'compact' and 'full_json_file': A response dictionary with the structure:
+          {
+              "data": Single trace object,
+              "metadata": {
+                  "file_path": Path to saved file (only for full_json_file mode),
+                  "file_info": File save details (only for full_json_file mode)
+              }
+          }
+        - For 'full_json_string': A string containing the full JSON response
         
     Usage Tips:
         - For quick browsing: use include_observations=False with output_mode="compact"
@@ -757,10 +814,31 @@ async def fetch_trace(
         
         # Process based on output mode
         base_filename_prefix = f"trace_{trace_id}"
-        trace = process_data_with_mode(raw_trace, output_mode, base_filename_prefix, state)
+        processed_data = process_data_with_mode(raw_trace, output_mode, base_filename_prefix, state)
+        
+        # Determine file path information
+        file_path = None
+        file_info = None
+        
+        # Extract file information if available
+        if output_mode == OutputMode.FULL_JSON_FILE:
+            if isinstance(processed_data, dict) and '_file_save_info' in processed_data:
+                file_info = processed_data.get('_file_save_info')
+                file_path = processed_data.get('_full_json_file_path')
         
         logger.info(f"Retrieved trace {trace_id}, returning with output_mode={output_mode}, include_observations={include_observations}")
-        return trace
+        
+        # Return data in the standard response format
+        if output_mode == OutputMode.FULL_JSON_STRING:
+            return processed_data
+        else:
+            return {
+                "data": processed_data,
+                "metadata": {
+                    "file_path": file_path,
+                    "file_info": file_info
+                }
+            }
     except Exception as e:
         logger.error(f"Error fetching trace {trace_id}: {str(e)}")
         logger.exception(e)
@@ -829,10 +907,36 @@ async def fetch_observations(
         
         # Process based on output mode
         base_filename_prefix = f"observations_{type or 'all'}"
-        observations = process_data_with_mode(raw_observations, output_mode, base_filename_prefix, state)
+        processed_data = process_data_with_mode(raw_observations, output_mode, base_filename_prefix, state)
+        
+        # Determine file path information
+        file_path = None
+        file_info = None
+        
+        # Extract file information if available
+        if output_mode == OutputMode.FULL_JSON_FILE:
+            if isinstance(processed_data, dict) and '_file_save_info' in processed_data:
+                file_info = processed_data.get('_file_save_info')
+                file_path = processed_data.get('_full_json_file_path')
+                
+                # If it's a wrapped list response, keep the structure intact
+                if processed_data.get('_type') == 'list_response':
+                    return processed_data
         
         logger.info(f"Found {len(raw_observations)} observations, returning with output_mode={output_mode}")
-        return observations
+        
+        # Return data in the standard response format
+        if output_mode == OutputMode.FULL_JSON_STRING:
+            return processed_data
+        else:
+            return {
+                "data": processed_data,
+                "metadata": {
+                    "item_count": len(raw_observations),
+                    "file_path": file_path,
+                    "file_info": file_info
+                }
+            }
     except Exception as e:
         logger.error(f"Error fetching observations: {str(e)}")
         logger.exception(e)
@@ -875,10 +979,31 @@ async def fetch_observation(
         
         # Process based on output mode
         base_filename_prefix = f"observation_{observation_id}"
-        observation = process_data_with_mode(raw_observation, output_mode, base_filename_prefix, state)
+        processed_data = process_data_with_mode(raw_observation, output_mode, base_filename_prefix, state)
+        
+        # Determine file path information
+        file_path = None
+        file_info = None
+        
+        # Extract file information if available
+        if output_mode == OutputMode.FULL_JSON_FILE:
+            if isinstance(processed_data, dict) and '_file_save_info' in processed_data:
+                file_info = processed_data.get('_file_save_info')
+                file_path = processed_data.get('_full_json_file_path')
         
         logger.info(f"Retrieved observation {observation_id}, returning with output_mode={output_mode}")
-        return observation
+        
+        # Return data in the standard response format
+        if output_mode == OutputMode.FULL_JSON_STRING:
+            return processed_data
+        else:
+            return {
+                "data": processed_data,
+                "metadata": {
+                    "file_path": file_path,
+                    "file_info": file_info
+                }
+            }
     except Exception as e:
         logger.error(f"Error fetching observation {observation_id}: {str(e)}")
         logger.exception(e)
@@ -935,7 +1060,14 @@ async def fetch_sessions(
         sessions = process_data_with_mode(raw_sessions, output_mode, base_filename_prefix, state)
         
         logger.info(f"Found {len(raw_sessions)} sessions, returning with output_mode={output_mode}")
-        return sessions
+        return {
+            "data": sessions,
+            "metadata": {
+                "item_count": len(raw_sessions),
+                "file_path": None,
+                "file_info": None
+            }
+        }
     except Exception as e:
         logger.error(f"Error fetching sessions: {str(e)}")
         logger.exception(e)
@@ -1025,7 +1157,13 @@ async def get_session_details(
         result = process_data_with_mode(session, output_mode, f"session_{session_id}", state)
         
         logger.info(f"Found session {session_id} with {len(raw_traces)} traces, returning with output_mode={output_mode}, include_observations={include_observations}")
-        return result
+        return {
+            "data": result,
+            "metadata": {
+                "file_path": None,
+                "file_info": None
+            }
+        }
     except Exception as e:
         logger.error(f"Error getting session {session_id}: {str(e)}")
         logger.exception(e)
@@ -1141,7 +1279,14 @@ async def get_user_sessions(
         result = process_data_with_mode(sessions, output_mode, f"user_{user_id}_sessions", state)
         
         logger.info(f"Found {len(sessions)} sessions for user {user_id}, returning with output_mode={output_mode}, include_observations={include_observations}")
-        return result
+        return {
+            "data": result,
+            "metadata": {
+                "item_count": len(sessions),
+                "file_path": None,
+                "file_info": None
+            }
+        }
     except Exception as e:
         logger.error(f"Error getting sessions for user {user_id}: {str(e)}")
         logger.exception(e)
@@ -1340,7 +1485,13 @@ async def find_exceptions_in_file(
         processed_exceptions = process_data_with_mode(top_exceptions, output_mode, base_filename_prefix, state)
         
         logger.info(f"Found {len(exceptions)} exceptions in file {filepath}, returning with output_mode={output_mode}")
-        return processed_exceptions
+        return {
+            "data": processed_exceptions,
+            "metadata": {
+                "file_path": filepath,
+                "file_info": None
+            }
+        }
     except Exception as e:
         logger.error(f"Error finding exceptions in file {filepath}: {str(e)}")
         logger.exception(e)
@@ -1450,7 +1601,13 @@ async def get_exception_details(
         processed_exceptions = process_data_with_mode(exceptions, output_mode, base_filename_prefix, state)
         
         logger.info(f"Found {len(exceptions)} exceptions in trace {trace_id}, returning with output_mode={output_mode}")
-        return processed_exceptions
+        return {
+            "data": processed_exceptions,
+            "metadata": {
+                "file_path": None,
+                "file_info": None
+            }
+        }
     except Exception as e:
         logger.error(f"Error getting exception details for trace {trace_id}: {str(e)}")
         logger.exception(e)
@@ -1529,7 +1686,13 @@ async def get_error_count(
         }
         
         logger.info(f"Found {total_exceptions} exceptions in {observations_with_exceptions} observations across {len(trace_ids_with_exceptions)} traces")
-        return result
+        return {
+            "data": result,
+            "metadata": {
+                "file_path": None,
+                "file_info": None
+            }
+        }
     except Exception as e:
         logger.error(f"Error getting error count for the last {age} minutes: {str(e)}")
         logger.exception(e)

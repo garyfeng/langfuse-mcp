@@ -90,6 +90,54 @@ The MCP server provides the following tools for AI agents:
 - `get_observation` - Get a specific observation by ID
 - `get_observations_by_type` - Get observations filtered by type
 
+### Output Modes and File Paths
+
+Each tool supports different output modes to control the level of detail in responses:
+
+- `compact` (default): Returns a summary with large values truncated
+- `full_json_string`: Returns the complete data as a JSON string
+- `full_json_file`: Saves the complete data to a file and returns a summary with file information
+
+When using `full_json_file` mode, the file path information is included in the response in these ways:
+
+1. For single object responses (dictionaries), the file path is included directly in the object:
+   ```json
+   {
+     "id": "trace_12345",
+     "name": "Example Trace",
+     "observations": [...],
+     "_file_save_info": {
+       "status": "success",
+       "message": "Full data saved successfully.",
+       "file_path": "/tmp/langfuse_mcp_dumps/trace_12345_20230101_120000.json"
+     },
+     "_full_json_file_path": "/tmp/langfuse_mcp_dumps/trace_12345_20230101_120000.json",
+     "_message": "Response summarized. Full details in the saved file."
+   }
+   ```
+
+2. For list responses, the list is wrapped in a special structure to preserve the list while adding file info:
+   ```json
+   {
+     "_type": "list_response",
+     "_items": [
+       { "id": "trace_1", "name": "First Trace", ... },
+       { "id": "trace_2", "name": "Second Trace", ... },
+       ...
+     ],
+     "_count": 5,
+     "_file_save_info": {
+       "status": "success",
+       "message": "Full data saved successfully.",
+       "file_path": "/tmp/langfuse_mcp_dumps/traces_20230101_120000.json"
+     },
+     "_full_json_file_path": "/tmp/langfuse_mcp_dumps/traces_20230101_120000.json",
+     "_message": "Response contains 5 items. Full details in the saved file."
+   }
+   ```
+
+This approach ensures that file path information is always available in a consistent and predictable way, regardless of whether the response is a single object or a list of objects.
+
 ### Testing
 
 To run the test client:
