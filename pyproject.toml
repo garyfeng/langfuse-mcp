@@ -39,6 +39,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest",
+    "pytest-asyncio",
+    "pytest-mock",
     "ruff",
 ]
 
@@ -69,9 +71,7 @@ exclude = [
     "/bin/",
     "/logs/",
     "/.venv/",
-    "/*.code-workspace",
-    "/langfuse_traces*.csv",
-    "/langfuse_traces*.md"
+    "/*.code-workspace"
 ]
 include = [
     "/README.md",
