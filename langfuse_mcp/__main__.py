@@ -12,6 +12,7 @@ from functools import lru_cache
 from logging.handlers import RotatingFileHandler
 from typing import Annotated, Any, Literal, Union, cast, List, Dict
 from importlib.metadata import version, PackageNotFoundError
+from enum import Enum
 
 from cachetools import LRUCache
 from langfuse import Langfuse
@@ -65,13 +66,38 @@ TRUNCATE_SUFFIX = "..." # Suffix to add to truncated fields
 LARGE_FIELDS = [
     "input", "output", "content", "prompt", "completion", "system_prompt", 
     "user_prompt", "message", "exception.stacktrace", "exception.message", 
-    "stacktrace"
+    "stacktrace",
+    # OTEL specific fields
+    "llm.prompts", "llm.prompt", "llm.prompts.system", "llm.prompts.user", 
+    "llm.prompt.system", "llm.prompt.user",
+    # Langfuse-specific fields
+    "langfusePrompt", "prompt.content", "prompt.messages", "prompt.system",
+    "metadata.langfusePrompt", "metadata.system_prompt", "metadata.prompt",
+    # Additional attribute paths
+    "attributes.llm.prompts", "attributes.llm.prompt", "attributes.system_prompt",
+    "attributes.prompt", "attributes.input", "attributes.output"
 ]
+
+# Fields that are considered essential and should be preserved even in minimal representation
+ESSENTIAL_FIELDS = [
+    "id", "trace_id", "observation_id", "parent_observation_id", "name", "type", 
+    "timestamp", "start_time", "end_time", "level", "status_message", "user_id", "session_id"
+]
+
+# Literal enum for output modes
+class OutputMode(str, Enum):
+    """Enum for output modes controlling response format."""
+    COMPACT = "compact"
+    FULL_JSON_STRING = "full_json_string"
+    FULL_JSON_FILE = "full_json_file"
+
+OUTPUT_MODE_LITERAL = Literal["compact", "full_json_string", "full_json_file"]
 
 def truncate_large_strings(obj: Any, max_length: int = MAX_FIELD_LENGTH, 
                            max_response_size: int = MAX_RESPONSE_SIZE,
-                           path: str = "", current_size: int = 0) -> tuple[Any, int]:
-    """Recursively process an object and truncate large string values.
+                           path: str = "", current_size: int = 0, 
+                           truncation_level: int = 0) -> tuple[Any, int]:
+    """Recursively process an object and truncate large string values with intelligent list handling.
     
     Args:
         obj: The object to process (dict, list, string, etc.)
@@ -79,12 +105,22 @@ def truncate_large_strings(obj: Any, max_length: int = MAX_FIELD_LENGTH,
         max_response_size: Maximum total response size in characters
         path: Current path in the object (for nested objects)
         current_size: Current size of the processed object
+        truncation_level: Level of truncation to apply (0=normal, 1=aggressive, 2=minimal)
         
     Returns:
         Tuple of (processed object, size of processed object)
     """
-    # Base case: if we've already exceeded max response size, return minimal representation
-    if current_size > max_response_size:
+    # Calculate adjusted max_length based on truncation level
+    adjusted_max_length = max_length
+    if truncation_level == 1:
+        # More aggressive truncation for level 1
+        adjusted_max_length = max(50, max_length // 2)
+    elif truncation_level == 2:
+        # Minimal representation for level 2 (extreme truncation)
+        adjusted_max_length = max(20, max_length // 5)
+    
+    # Base case: if we've already exceeded max response size by a lot, return minimal representation
+    if current_size > max_response_size * 1.5:
         return "[TRUNCATED]", len("[TRUNCATED]")
     
     # Handle different types
@@ -92,44 +128,71 @@ def truncate_large_strings(obj: Any, max_length: int = MAX_FIELD_LENGTH,
         result = {}
         result_size = 2  # Count braces
         
-        # First pass: process known large fields and essential IDs
+        # First pass: always process essential fields first
         for key in list(obj.keys()):
-            # Always process IDs and essential fields first
-            if key in ["id", "trace_id", "observation_id", "name", "type"]:
+            if key in ESSENTIAL_FIELDS:
                 processed_value, value_size = truncate_large_strings(
-                    obj[key], max_length, max_response_size, 
-                    f"{path}.{key}" if path else key, current_size + result_size
+                    obj[key], adjusted_max_length, max_response_size, 
+                    f"{path}.{key}" if path else key, current_size + result_size,
+                    truncation_level
                 )
                 result[key] = processed_value
                 result_size += len(str(key)) + 2 + value_size  # key + colon + value size
                 
-            # Process known large fields next
-            elif key in LARGE_FIELDS or any(field in key for field in LARGE_FIELDS):
-                value = obj[key]
-                if isinstance(value, str) and len(value) > max_length:
-                    result[key] = value[:max_length] + TRUNCATE_SUFFIX
-                    logger.debug(f"Truncated field {path}.{key} from {len(value)} to {max_length} chars")
-                    result_size += len(str(key)) + 2 + max_length + len(TRUNCATE_SUFFIX)
-                else:
-                    processed_value, value_size = truncate_large_strings(
-                        value, max_length, max_response_size, 
-                        f"{path}.{key}" if path else key, current_size + result_size
-                    )
-                    result[key] = processed_value
-                    result_size += len(str(key)) + 2 + value_size
+        # Second pass: process known large fields next
+        if truncation_level < 2:  # Skip detailed content at highest truncation level
+            for key in list(obj.keys()):
+                if key in LARGE_FIELDS or any(field in key.lower() for field in LARGE_FIELDS):
+                    if key not in result:  # Skip if already processed
+                        value = obj[key]
+                        if isinstance(value, str) and len(value) > adjusted_max_length:
+                            # For stacktraces, keep first and last few lines
+                            if "stack" in key.lower() and "\n" in value:
+                                lines = value.split("\n")
+                                if len(lines) > 6:
+                                    # Keep first 3 and last 3 lines for context
+                                    truncated_stack = "\n".join(lines[:3] + ["..."] + lines[-3:])
+                                    result[key] = truncated_stack
+                                    logger.debug(f"Truncated stack in {path}.{key} from {len(lines)} lines to 7 lines")
+                                    result_size += len(str(key)) + 2 + len(truncated_stack)
+                                else:
+                                    result[key] = value
+                                    result_size += len(str(key)) + 2 + len(value)
+                            else:
+                                # For other large text fields, regular truncation
+                                result[key] = value[:adjusted_max_length] + TRUNCATE_SUFFIX
+                                logger.debug(f"Truncated field {path}.{key} from {len(value)} to {adjusted_max_length} chars")
+                                result_size += len(str(key)) + 2 + adjusted_max_length + len(TRUNCATE_SUFFIX)
+                        else:
+                            processed_value, value_size = truncate_large_strings(
+                                value, adjusted_max_length, max_response_size, 
+                                f"{path}.{key}" if path else key, current_size + result_size,
+                                truncation_level
+                            )
+                            result[key] = processed_value
+                            result_size += len(str(key)) + 2 + value_size
         
-        # Second pass: process remaining fields if we have size budget remaining
-        for key in obj:
-            if key not in result:
-                # Skip if we're approaching max size
+        # Final pass: process remaining fields if we have size budget remaining
+        remaining_fields = [k for k in obj if k not in result]
+        
+        # Skip non-essential fields at highest truncation level
+        if truncation_level >= 2 and len(remaining_fields) > 0:
+            result["_note"] = f"{len(remaining_fields)} non-essential fields omitted"
+            result_size += len("_note") + 2 + len(result["_note"])
+        else:
+            for key in remaining_fields:
+                # Skip if we're approaching max size and apply more aggressive truncation
                 if current_size + result_size > max_response_size * 0.9:
-                    result["_note"] = f"Response truncated to {max_response_size} characters"
-                    result_size += len("_note") + 2 + len(result["_note"])
-                    break
-                    
+                    # Instead of breaking, increase truncation level for remaining fields
+                    next_truncation_level = min(2, truncation_level + 1)
+                    if next_truncation_level > truncation_level:
+                        result["_truncation_note"] = f"Response truncated due to size constraints"
+                        result_size += len("_truncation_note") + 2 + len(result["_truncation_note"])
+                        
                 processed_value, value_size = truncate_large_strings(
-                    obj[key], max_length, max_response_size, 
-                    f"{path}.{key}" if path else key, current_size + result_size
+                    obj[key], adjusted_max_length, max_response_size, 
+                    f"{path}.{key}" if path else key, current_size + result_size,
+                    min(2, truncation_level + (1 if current_size + result_size > max_response_size * 0.7 else 0))
                 )
                 result[key] = processed_value
                 result_size += len(str(key)) + 2 + value_size
@@ -140,16 +203,54 @@ def truncate_large_strings(obj: Any, max_length: int = MAX_FIELD_LENGTH,
         result = []
         result_size = 2  # Count brackets
         
+        # Special handling for empty lists
+        if not obj:
+            return [], 2
+        
+        # Estimate average item size to plan truncation strategy
+        # We'll sample the first item or use a default
+        sample_size = 0
+        if obj:
+            sample_item, sample_size = truncate_large_strings(
+                obj[0], adjusted_max_length, max_response_size, 
+                f"{path}[0]", current_size + result_size,
+                truncation_level
+            )
+            
+        estimated_total_size = sample_size * len(obj)
+        
+        # Determine the appropriate truncation strategy based on estimated size
+        target_truncation_level = truncation_level
+        if estimated_total_size > max_response_size * 0.8:
+            # If the list would be too large, increase truncation level
+            target_truncation_level = min(2, truncation_level + 1)
+            
+        # If even at max truncation we'd exceed size, we need to limit the number of items
+        will_need_item_limit = False
+        if target_truncation_level == 2 and estimated_total_size > max_response_size:
+            will_need_item_limit = True
+            max_items = max(5, int(max_response_size * 0.8 / (sample_size or 100)))
+        else:
+            max_items = len(obj)
+            
+        # Process items with appropriate truncation level
         for i, item in enumerate(obj):
-            # Skip if we're approaching max size
-            if current_size + result_size > max_response_size * 0.9:
-                result.append({"_note": f"Array truncated, {len(obj) - i} of {len(obj)} items omitted"})
+            if will_need_item_limit and i >= max_items:
+                result.append({
+                    "_note": f"List truncated, {len(obj) - i} of {len(obj)} items omitted due to size constraints"
+                })
                 result_size += 2 + len(result[-1]["_note"])
                 break
                 
+            item_truncation_level = target_truncation_level
+            # Apply even more aggressive truncation as we approach the limit
+            if current_size + result_size > max_response_size * 0.8:
+                item_truncation_level = 2
+                
             processed_item, item_size = truncate_large_strings(
-                item, max_length, max_response_size, 
-                f"{path}[{i}]", current_size + result_size
+                item, adjusted_max_length, max_response_size, 
+                f"{path}[{i}]", current_size + result_size,
+                item_truncation_level
             )
             result.append(processed_item)
             result_size += item_size
@@ -159,28 +260,31 @@ def truncate_large_strings(obj: Any, max_length: int = MAX_FIELD_LENGTH,
         return result, result_size
         
     elif isinstance(obj, str):
-        # Simple string truncation
-        if len(obj) > max_length:
-            # Special logic for stacktraces and large text - truncate more aggressively
-            if "stacktrace" in path.lower() or len(obj) > max_length * 2:
-                truncated = obj[:max_length] + TRUNCATE_SUFFIX
-                logger.debug(f"Truncated string at {path} from {len(obj)} to {len(truncated)} chars")
+        # String truncation strategy based on truncation level
+        if len(obj) <= adjusted_max_length:
+            return obj, len(obj)
+            
+        # Special handling for stacktraces at normal truncation level
+        if truncation_level == 0 and ("stacktrace" in path.lower() or "stack" in path.lower()) and "\n" in obj:
+            lines = obj.split("\n")
+            if len(lines) > 6:
+                # Keep first 3 and last 3 lines for context at normal level
+                truncated = "\n".join(lines[:3] + ["..."] + lines[-3:])
                 return truncated, len(truncated)
-            elif current_size + len(obj) > max_response_size:
-                # If this string would push us over the limit, truncate it
-                available_space = max(0, max_response_size - current_size)
-                if available_space < len(TRUNCATE_SUFFIX) + 10:
-                    return "[...]", 5
-                truncated = obj[:available_space - len(TRUNCATE_SUFFIX)] + TRUNCATE_SUFFIX
-                return truncated, len(truncated)
+        
+        # Regular string truncation with adjusted max length
+        if len(obj) > adjusted_max_length:
+            truncated = obj[:adjusted_max_length] + TRUNCATE_SUFFIX
+            return truncated, len(truncated)
+            
         return obj, len(obj)
         
     else:
         # For other types (int, float, bool, None), return as is
         return obj, len(str(obj))
 
-def process_response_data(data: Any) -> Any:
-    """Process response data to truncate large values.
+def process_compact_data(data: Any) -> Any:
+    """Process response data to truncate large values while preserving list item counts.
     
     Args:
         data: The response data to process
@@ -188,9 +292,116 @@ def process_response_data(data: Any) -> Any:
     Returns:
         Processed data with large values truncated
     """
-    processed_data, size = truncate_large_strings(data)
-    logger.debug(f"Processed response data: original size unknown, processed size {size} chars")
+    processed_data, size = truncate_large_strings(data, truncation_level=0)
+    logger.debug(f"Processed response data: processed size {size} chars")
     return processed_data
+
+def serialize_full_json_string(data: Any) -> str:
+    """Serialize data to a full JSON string without truncation.
+    
+    Args:
+        data: The full data to serialize
+        
+    Returns:
+        JSON string representation of the data
+    """
+    try:
+        # Use default=str to handle datetime and other non-serializable objects
+        return json.dumps(data, default=str)
+    except Exception as e:
+        logger.error(f"Error serializing to full JSON string: {str(e)}")
+        return json.dumps({"error": f"Failed to serialize response: {str(e)}"})
+
+def save_full_data_to_file(data: Any, base_filename_prefix: str, state: "MCPState") -> Dict[str, Any]:
+    """Save full data to a JSON file in the configured dump directory.
+    
+    Args:
+        data: The full data to save
+        base_filename_prefix: Prefix for the filename (e.g., "trace_123")
+        state: MCPState with dump_dir configuration
+        
+    Returns:
+        Dictionary with status information about the file save operation
+    """
+    if not state.dump_dir:
+        logger.warning("Cannot save full data: dump_dir not configured")
+        return {
+            "status": "error",
+            "message": "Dump directory not configured. Use --dump-dir CLI argument.",
+            "file_path": None
+        }
+    
+    # Sanitize the filename prefix
+    safe_prefix = "".join(c for c in base_filename_prefix if c.isalnum() or c in "_-.")
+    if not safe_prefix:
+        safe_prefix = "langfuse_data"
+    
+    # Generate a unique filename with timestamp
+    timestamp = datetime.now(UTC).strftime('%Y%m%d_%H%M%S_%f')
+    filename = f"{safe_prefix}_{timestamp}.json"
+    filepath = os.path.join(state.dump_dir, filename)
+    
+    try:
+        # Ensure the directory exists (extra safety check)
+        os.makedirs(state.dump_dir, exist_ok=True)
+        
+        # Serialize the data with pretty-printing for better readability
+        json_str = json.dumps(data, default=str, indent=2)
+        
+        # Write to file
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(json_str)
+            
+        logger.info(f"Full data saved to {filepath}")
+        return {
+            "status": "success",
+            "message": "Full data saved successfully.",
+            "file_path": filepath
+        }
+    except Exception as e:
+        logger.error(f"Error saving full data to file: {str(e)}")
+        return {
+            "status": "error",
+            "message": f"Failed to save full data: {str(e)}",
+            "file_path": None
+        }
+
+def process_data_with_mode(data: Any, output_mode: OUTPUT_MODE_LITERAL, base_filename_prefix: str, state: "MCPState") -> Any:
+    """Process data according to the specified output mode.
+    
+    Args:
+        data: The raw data to process
+        output_mode: The output mode to use
+        base_filename_prefix: Prefix for filename when using full_json_file mode
+        state: MCPState with configuration
+        
+    Returns:
+        Processed data according to the output mode
+    """
+    if output_mode == OutputMode.COMPACT:
+        return process_compact_data(data)
+    
+    elif output_mode == OutputMode.FULL_JSON_STRING:
+        return serialize_full_json_string(data)
+    
+    elif output_mode == OutputMode.FULL_JSON_FILE:
+        # Process a compact version of the data
+        compact_data = process_compact_data(data)
+        
+        # Save the full data to a file
+        save_info = save_full_data_to_file(data, base_filename_prefix, state)
+        
+        # Add file save info to the compact data
+        if isinstance(compact_data, dict):
+            compact_data['_file_save_info'] = save_info
+            if save_info['status'] == 'success':
+                compact_data['_message'] = "Response summarized. Full details in the saved file."
+        
+        return compact_data
+    
+    else:
+        logger.warning(f"Unknown output mode: {output_mode}, using compact mode")
+        return process_compact_data(data)
 
 @dataclass
 class MCPState:
@@ -216,6 +427,10 @@ class MCPState:
     exceptions_by_filepath: LRUCache = field(
         default_factory=lambda: LRUCache(maxsize=100),
         metadata={"description": "Mapping of file paths to exception details"}
+    )
+    dump_dir: str = field(
+        default=None,
+        metadata={"description": "Directory to save full JSON dumps when 'output_mode' is 'full_json_file'"}
     )
 
 
@@ -343,6 +558,59 @@ async def _efficient_fetch_observations(
     return observations
 
 
+async def _embed_observations_in_traces(state: MCPState, traces: List[Any]) -> None:
+    """Fetch and embed full observation objects into traces.
+    
+    This replaces the observation IDs list with a list of the actual observation objects.
+    
+    Args:
+        state: MCP state with Langfuse client
+        traces: List of trace objects to process
+    """
+    if not traces:
+        return
+        
+    # Process each trace
+    for trace in traces:
+        if not isinstance(trace, dict) or "observations" not in trace:
+            continue
+            
+        observation_ids = trace["observations"]
+        if not isinstance(observation_ids, list):
+            continue
+            
+        # Skip if there are no observations
+        if not observation_ids:
+            continue
+            
+        # Fetch each observation
+        full_observations = []
+        for obs_id in observation_ids:
+            try:
+                # Use the client to fetch the observation
+                obs_response = state.langfuse_client.fetch_observation(obs_id)
+                
+                # Convert to serializable format
+                if hasattr(obs_response.data, 'dict'):
+                    obs_data = obs_response.data.dict()
+                else:
+                    obs_data = obs_response.data
+                    
+                full_observations.append(obs_data)
+                logger.debug(f"Fetched observation {obs_id} for trace {trace.get('id', 'unknown')}")
+            except Exception as e:
+                logger.warning(f"Error fetching observation {obs_id}: {str(e)}")
+                # Include a placeholder with the ID for reference
+                full_observations.append({
+                    "id": obs_id,
+                    "fetch_error": str(e)
+                })
+        
+        # Replace the observation IDs with the full objects
+        trace["observations"] = full_observations
+        logger.debug(f"Embedded {len(full_observations)} observations in trace {trace.get('id', 'unknown')}")
+
+
 async def fetch_traces(
     ctx: Context,
     age: int = Field(..., description="Minutes ago to start looking (e.g., 1440 for 24 hours)"),
@@ -352,8 +620,21 @@ async def fetch_traces(
     metadata: dict = Field(None, description="Metadata fields to filter by"),
     page: int = Field(1, description="Page number for pagination (starts at 1)"),
     limit: int = Field(50, description="Maximum number of traces to return per page"),
-    tags: str = Field(None, description="Tag or list of tags to filter traces by")
-) -> List[dict]:
+    tags: str = Field(None, description="Tag or list of tags to filter traces by"),
+    include_observations: bool = Field(
+        False, 
+        description="If True, fetch and include the full observation objects instead of just IDs. Use this when you need access to system prompts, model parameters, or other details stored within observations. Significantly increases response time but provides complete data. Pairs well with output_mode='full_json_file' for complete dumps."
+    ),
+    output_mode: OUTPUT_MODE_LITERAL = Field(
+        OutputMode.COMPACT,
+        description=(
+            "Controls the output format and action. "
+            "'compact' (default): Returns a summarized JSON object optimized for direct agent consumption. "
+            "'full_json_string': Returns the complete, raw JSON data serialized as a string. "
+            "'full_json_file': Returns a summarized JSON object AND saves the complete data to a file."
+        )
+    )
+) -> Union[List[dict], str]:
     """Find traces based on filters.
     
     Uses the Langfuse API to search for traces that match the provided filters.
@@ -369,9 +650,21 @@ async def fetch_traces(
         page: Page number for pagination (starts at 1)
         limit: Maximum number of traces to return per page
         tags: Tag or list of tags to filter traces by
+        include_observations: If True, fetch and include the full observation objects instead of just IDs.
+            Use this when you need access to system prompts, model parameters, or other details stored 
+            within observations. Significantly increases response time but provides complete data.
+        output_mode: Controls the output format and detail level
     
     Returns:
-        List of trace objects matching the filters
+        Based on output_mode:
+        - compact: List of summarized trace objects
+        - full_json_string: String containing the full JSON response
+        - full_json_file: List of summarized trace objects with file save info
+        
+    Usage Tips:
+        - For quick browsing: use include_observations=False with output_mode="compact"
+        - For full data but viewable in responses: use include_observations=True with output_mode="compact"
+        - For complete data dumps: use include_observations=True with output_mode="full_json_file"
     """
     state = cast(MCPState, ctx.request_context.lifespan_context)
     
@@ -393,10 +686,16 @@ async def fetch_traces(
         # Convert response to a serializable format
         raw_traces = [trace.dict() if hasattr(trace, 'dict') else trace for trace in response.data]
         
-        # Process and truncate large values
-        traces = process_response_data(raw_traces)
+        # If include_observations is True, fetch and embed the full observation objects
+        if include_observations and raw_traces:
+            logger.info(f"Fetching full observation details for {sum(len(t.get('observations', [])) for t in raw_traces)} observations")
+            await _embed_observations_in_traces(state, raw_traces)
         
-        logger.info(f"Found {len(traces)} traces")
+        # Process based on output mode
+        base_filename_prefix = "traces"
+        traces = process_data_with_mode(raw_traces, output_mode, base_filename_prefix, state)
+        
+        logger.info(f"Found {len(raw_traces)} traces, returning with output_mode={output_mode}, include_observations={include_observations}")
         return traces
     except Exception as e:
         logger.error(f"Error in fetch_traces: {str(e)}")
@@ -406,15 +705,40 @@ async def fetch_traces(
 
 async def fetch_trace(
     ctx: Context,
-    trace_id: str = Field(..., description="The ID of the trace to fetch (unique identifier string)")
-) -> dict:
+    trace_id: str = Field(..., description="The ID of the trace to fetch (unique identifier string)"),
+    include_observations: bool = Field(
+        False, 
+        description="If True, fetch and include the full observation objects instead of just IDs. Use this when you need access to system prompts, model parameters, or other details stored within observations. Significantly increases response time but provides complete data. Pairs well with output_mode='full_json_file' for complete dumps."
+    ),
+    output_mode: OUTPUT_MODE_LITERAL = Field(
+        OutputMode.COMPACT,
+        description=(
+            "Controls the output format and action. "
+            "'compact' (default): Returns a summarized JSON object optimized for direct agent consumption. "
+            "'full_json_string': Returns the complete, raw JSON data serialized as a string. "
+            "'full_json_file': Returns a summarized JSON object AND saves the complete data to a file."
+        )
+    )
+) -> Union[dict, str]:
     """Get a single trace by ID with full details.
     
     Args:
         trace_id: The ID of the trace to fetch (unique identifier string)
+        include_observations: If True, fetch and include the full observation objects instead of just IDs.
+            Use this when you need access to system prompts, model parameters, or other details stored 
+            within observations. Significantly increases response time but provides complete data.
+        output_mode: Controls the output format and detail level
     
     Returns:
-        Complete trace object with all associated observations and metadata
+        Based on output_mode:
+        - compact: Summarized trace object
+        - full_json_string: String containing the full JSON response
+        - full_json_file: Summarized trace object with file save info
+        
+    Usage Tips:
+        - For quick browsing: use include_observations=False with output_mode="compact"
+        - For full data but viewable in responses: use include_observations=True with output_mode="compact"
+        - For complete data dumps: use include_observations=True with output_mode="full_json_file"
     """
     state = cast(MCPState, ctx.request_context.lifespan_context)
     
@@ -425,10 +749,17 @@ async def fetch_trace(
         # Convert response to a serializable format
         raw_trace = response.data.dict() if hasattr(response.data, 'dict') else response.data
         
-        # Process and truncate large values
-        trace = process_response_data(raw_trace)
+        # If include_observations is True, fetch and embed the full observation objects
+        if include_observations and raw_trace:
+            if isinstance(raw_trace, dict) and "observations" in raw_trace:
+                logger.info(f"Fetching full observation details for {len(raw_trace.get('observations', []))} observations")
+                await _embed_observations_in_traces(state, [raw_trace])
         
-        logger.info(f"Retrieved trace {trace_id}")
+        # Process based on output mode
+        base_filename_prefix = f"trace_{trace_id}"
+        trace = process_data_with_mode(raw_trace, output_mode, base_filename_prefix, state)
+        
+        logger.info(f"Retrieved trace {trace_id}, returning with output_mode={output_mode}, include_observations={include_observations}")
         return trace
     except Exception as e:
         logger.error(f"Error fetching trace {trace_id}: {str(e)}")
@@ -445,8 +776,17 @@ async def fetch_observations(
     trace_id: str = Field(None, description="Optional trace ID filter (exact match)"),
     parent_observation_id: str = Field(None, description="Optional parent observation ID filter (exact match)"),
     page: int = Field(1, description="Page number for pagination (starts at 1)"),
-    limit: int = Field(50, description="Maximum number of observations to return per page")
-) -> List[dict]:
+    limit: int = Field(50, description="Maximum number of observations to return per page"),
+    output_mode: OUTPUT_MODE_LITERAL = Field(
+        OutputMode.COMPACT,
+        description=(
+            "Controls the output format and action. "
+            "'compact' (default): Returns a summarized JSON object optimized for direct agent consumption. "
+            "'full_json_string': Returns the complete, raw JSON data serialized as a string. "
+            "'full_json_file': Returns a summarized JSON object AND saves the complete data to a file."
+        )
+    )
+) -> Union[List[dict], str]:
     """Get observations filtered by type and other criteria.
     
     Args:
@@ -458,9 +798,13 @@ async def fetch_observations(
         parent_observation_id: Optional parent observation ID filter (exact match)
         page: Page number for pagination (starts at 1)
         limit: Maximum number of observations to return per page
+        output_mode: Controls the output format and detail level
     
     Returns:
-        List of observation objects matching the filters
+        Based on output_mode:
+        - compact: List of summarized observation objects
+        - full_json_string: String containing the full JSON response
+        - full_json_file: List of summarized observation objects with file save info
     """
     state = cast(MCPState, ctx.request_context.lifespan_context)
     
@@ -483,10 +827,11 @@ async def fetch_observations(
         # Convert response to a serializable format
         raw_observations = [obs.dict() if hasattr(obs, 'dict') else obs for obs in response.data]
         
-        # Process and truncate large values
-        observations = process_response_data(raw_observations)
+        # Process based on output mode
+        base_filename_prefix = f"observations_{type or 'all'}"
+        observations = process_data_with_mode(raw_observations, output_mode, base_filename_prefix, state)
         
-        logger.info(f"Found {len(observations)} observations")
+        logger.info(f"Found {len(raw_observations)} observations, returning with output_mode={output_mode}")
         return observations
     except Exception as e:
         logger.error(f"Error fetching observations: {str(e)}")
@@ -496,15 +841,28 @@ async def fetch_observations(
 
 async def fetch_observation(
     ctx: Context,
-    observation_id: str = Field(..., description="The ID of the observation to fetch (unique identifier string)")
-) -> dict:
+    observation_id: str = Field(..., description="The ID of the observation to fetch (unique identifier string)"),
+    output_mode: OUTPUT_MODE_LITERAL = Field(
+        OutputMode.COMPACT,
+        description=(
+            "Controls the output format and action. "
+            "'compact' (default): Returns a summarized JSON object optimized for direct agent consumption. "
+            "'full_json_string': Returns the complete, raw JSON data serialized as a string. "
+            "'full_json_file': Returns a summarized JSON object AND saves the complete data to a file."
+        )
+    )
+) -> Union[dict, str]:
     """Get a single observation by ID.
     
     Args:
         observation_id: The ID of the observation to fetch (unique identifier string)
+        output_mode: Controls the output format and detail level
     
     Returns:
-        Complete observation object with all associated events and metadata
+        Based on output_mode:
+        - compact: Summarized observation object
+        - full_json_string: String containing the full JSON response
+        - full_json_file: Summarized observation object with file save info
     """
     state = cast(MCPState, ctx.request_context.lifespan_context)
     
@@ -515,10 +873,11 @@ async def fetch_observation(
         # Convert response to a serializable format
         raw_observation = response.data.dict() if hasattr(response.data, 'dict') else response.data
         
-        # Process and truncate large values
-        observation = process_response_data(raw_observation)
+        # Process based on output mode
+        base_filename_prefix = f"observation_{observation_id}"
+        observation = process_data_with_mode(raw_observation, output_mode, base_filename_prefix, state)
         
-        logger.info(f"Retrieved observation {observation_id}")
+        logger.info(f"Retrieved observation {observation_id}, returning with output_mode={output_mode}")
         return observation
     except Exception as e:
         logger.error(f"Error fetching observation {observation_id}: {str(e)}")
@@ -530,17 +889,30 @@ async def fetch_sessions(
     ctx: Context,
     age: int = Field(..., description="Minutes ago to start looking (e.g., 1440 for 24 hours)"),
     page: int = Field(1, description="Page number for pagination (starts at 1)"),
-    limit: int = Field(50, description="Maximum number of sessions to return per page")
-) -> List[dict]:
+    limit: int = Field(50, description="Maximum number of sessions to return per page"),
+    output_mode: OUTPUT_MODE_LITERAL = Field(
+        OutputMode.COMPACT,
+        description=(
+            "Controls the output format and action. "
+            "'compact' (default): Returns a summarized JSON object optimized for direct agent consumption. "
+            "'full_json_string': Returns the complete, raw JSON data serialized as a string. "
+            "'full_json_file': Returns a summarized JSON object AND saves the complete data to a file."
+        )
+    )
+) -> Union[List[dict], str]:
     """Get a list of sessions in the current project.
     
     Args:
         age: Minutes ago to start looking (e.g., 1440 for 24 hours)
         page: Page number for pagination (starts at 1)
         limit: Maximum number of sessions to return per page
+        output_mode: Controls the output format and detail level
     
     Returns:
-        List of session objects
+        Based on output_mode:
+        - compact: List of summarized session objects
+        - full_json_string: String containing the full JSON response
+        - full_json_file: List of summarized session objects with file save info
     """
     state = cast(MCPState, ctx.request_context.lifespan_context)
     
@@ -558,10 +930,11 @@ async def fetch_sessions(
         # Convert response to a serializable format
         raw_sessions = [session.dict() if hasattr(session, 'dict') else session for session in response.data]
         
-        # Process and truncate large values
-        sessions = process_response_data(raw_sessions)
+        # Process based on output mode
+        base_filename_prefix = "sessions"
+        sessions = process_data_with_mode(raw_sessions, output_mode, base_filename_prefix, state)
         
-        logger.info(f"Found {len(sessions)} sessions")
+        logger.info(f"Found {len(raw_sessions)} sessions, returning with output_mode={output_mode}")
         return sessions
     except Exception as e:
         logger.error(f"Error fetching sessions: {str(e)}")
@@ -571,15 +944,40 @@ async def fetch_sessions(
 
 async def get_session_details(
     ctx: Context,
-    session_id: str = Field(..., description="The ID of the session to retrieve (unique identifier string)")
-) -> dict:
+    session_id: str = Field(..., description="The ID of the session to retrieve (unique identifier string)"),
+    include_observations: bool = Field(
+        False, 
+        description="If True, fetch and include the full observation objects instead of just IDs. Use this when you need access to system prompts, model parameters, or other details stored within observations. Significantly increases response time but provides complete data. Pairs well with output_mode='full_json_file' for complete dumps."
+    ),
+    output_mode: OUTPUT_MODE_LITERAL = Field(
+        OutputMode.COMPACT,
+        description=(
+            "Controls the output format and action. "
+            "'compact' (default): Returns a summarized JSON object optimized for direct agent consumption. "
+            "'full_json_string': Returns the complete, raw JSON data serialized as a string. "
+            "'full_json_file': Returns a summarized JSON object AND saves the complete data to a file."
+        )
+    )
+) -> Union[dict, str]:
     """Get detailed information about a specific session.
     
     Args:
         session_id: The ID of the session to retrieve (unique identifier string)
+        include_observations: If True, fetch and include the full observation objects instead of just IDs.
+            Use this when you need access to system prompts, model parameters, or other details stored 
+            within observations. Significantly increases response time but provides complete data.
+        output_mode: Controls the output format and detail level
     
     Returns:
-        Session details including associated traces, timestamps, and metrics
+        Based on output_mode:
+        - compact: Summarized session details object
+        - full_json_string: String containing the full JSON response
+        - full_json_file: Summarized session details object with file save info
+        
+    Usage Tips:
+        - For quick browsing: use include_observations=False with output_mode="compact"
+        - For full data but viewable in responses: use include_observations=True with output_mode="compact"
+        - For complete data dumps: use include_observations=True with output_mode="full_json_file"
     """
     state = cast(MCPState, ctx.request_context.lifespan_context)
     
@@ -602,22 +1000,32 @@ async def get_session_details(
         # Convert traces to a serializable format
         raw_traces = [trace.dict() if hasattr(trace, 'dict') else trace for trace in response.data]
         
-        # Process and truncate large values in traces
-        traces = process_response_data(raw_traces)
+        # If include_observations is True, fetch and embed the full observation objects
+        if include_observations and raw_traces:
+            total_observations = sum(len(t.get('observations', [])) for t in raw_traces)
+            if total_observations > 0:
+                logger.info(f"Fetching full observation details for {total_observations} observations across {len(raw_traces)} traces")
+                await _embed_observations_in_traces(state, raw_traces)
+        
+        # Process traces based on output mode
+        processed_traces = process_data_with_mode(raw_traces, output_mode, f"session_{session_id}_traces", state)
         
         # Create a session object with all traces that have this session ID
         session = {
             "id": session_id,
-            "traces": traces,
-            "trace_count": len(traces),
-            "first_timestamp": traces[0].get("timestamp") if traces else None,
-            "last_timestamp": traces[-1].get("timestamp") if traces else None,
-            "user_id": traces[0].get("user_id") if traces else None,
+            "traces": processed_traces,
+            "trace_count": len(raw_traces),
+            "first_timestamp": raw_traces[0].get("timestamp") if raw_traces else None,
+            "last_timestamp": raw_traces[-1].get("timestamp") if raw_traces else None,
+            "user_id": raw_traces[0].get("user_id") if raw_traces else None,
             "found": True
         }
         
-        logger.info(f"Found session {session_id} with {len(traces)} traces")
-        return session
+        # Process the final session object based on output mode
+        result = process_data_with_mode(session, output_mode, f"session_{session_id}", state)
+        
+        logger.info(f"Found session {session_id} with {len(raw_traces)} traces, returning with output_mode={output_mode}, include_observations={include_observations}")
+        return result
     except Exception as e:
         logger.error(f"Error getting session {session_id}: {str(e)}")
         logger.exception(e)
@@ -627,16 +1035,41 @@ async def get_session_details(
 async def get_user_sessions(
     ctx: Context,
     user_id: str = Field(..., description="The ID of the user to retrieve sessions for"),
-    age: int = Field(..., description="Minutes ago to start looking (e.g., 1440 for 24 hours)")
-) -> List[dict]:
+    age: int = Field(..., description="Minutes ago to start looking (e.g., 1440 for 24 hours)"),
+    include_observations: bool = Field(
+        False, 
+        description="If True, fetch and include the full observation objects instead of just IDs. Use this when you need access to system prompts, model parameters, or other details stored within observations. Significantly increases response time but provides complete data. Pairs well with output_mode='full_json_file' for complete dumps."
+    ),
+    output_mode: OUTPUT_MODE_LITERAL = Field(
+        OutputMode.COMPACT,
+        description=(
+            "Controls the output format and action. "
+            "'compact' (default): Returns a summarized JSON object optimized for direct agent consumption. "
+            "'full_json_string': Returns the complete, raw JSON data serialized as a string. "
+            "'full_json_file': Returns a summarized JSON object AND saves the complete data to a file."
+        )
+    )
+) -> Union[List[dict], str]:
     """Get sessions for a user within a time range.
     
     Args:
         user_id: The ID of the user to retrieve sessions for (unique identifier string)
         age: Minutes ago to start looking (e.g., 1440 for 24 hours)
+        include_observations: If True, fetch and include the full observation objects instead of just IDs.
+            Use this when you need access to system prompts, model parameters, or other details stored 
+            within observations. Significantly increases response time but provides complete data.
+        output_mode: Controls the output format and detail level
     
     Returns:
-        List of session objects associated with the user in the specified time range
+        Based on output_mode:
+        - compact: List of summarized session objects
+        - full_json_string: String containing the full JSON response
+        - full_json_file: List of summarized session objects with file save info
+        
+    Usage Tips:
+        - For quick browsing: use include_observations=False with output_mode="compact"
+        - For full data but viewable in responses: use include_observations=True with output_mode="compact"
+        - For complete data dumps: use include_observations=True with output_mode="full_json_file"
     """
     state = cast(MCPState, ctx.request_context.lifespan_context)
     
@@ -659,8 +1092,15 @@ async def get_user_sessions(
         # Convert traces to a serializable format
         raw_traces = [trace.dict() if hasattr(trace, 'dict') else trace for trace in response.data]
         
-        # Process and truncate large values in traces
-        traces = process_response_data(raw_traces)
+        # If include_observations is True, fetch and embed the full observation objects
+        if include_observations and raw_traces:
+            total_observations = sum(len(t.get('observations', [])) for t in raw_traces)
+            if total_observations > 0:
+                logger.info(f"Fetching full observation details for {total_observations} observations across {len(raw_traces)} traces")
+                await _embed_observations_in_traces(state, raw_traces)
+        
+        # Process traces based on output mode
+        traces = process_data_with_mode(raw_traces, OutputMode.COMPACT, f"user_{user_id}_traces", state)
         
         # Group traces by session_id
         sessions_dict = {}
@@ -697,8 +1137,11 @@ async def get_user_sessions(
         # Sort sessions by most recent last_timestamp
         sessions.sort(key=lambda x: x["last_timestamp"] if x["last_timestamp"] else "", reverse=True)
         
-        logger.info(f"Found {len(sessions)} sessions for user {user_id}")
-        return sessions
+        # Process the final sessions list based on output mode
+        result = process_data_with_mode(sessions, output_mode, f"user_{user_id}_sessions", state)
+        
+        logger.info(f"Found {len(sessions)} sessions for user {user_id}, returning with output_mode={output_mode}, include_observations={include_observations}")
+        return result
     except Exception as e:
         logger.error(f"Error getting sessions for user {user_id}: {str(e)}")
         logger.exception(e)
@@ -809,16 +1252,29 @@ async def find_exceptions_in_file(
         description="Number of minutes to look back (positive integer, max 7 days/10080 minutes)",
         gt=0,
         le=7 * DAY
+    ),
+    output_mode: OUTPUT_MODE_LITERAL = Field(
+        OutputMode.COMPACT,
+        description=(
+            "Controls the output format and action. "
+            "'compact' (default): Returns a summarized JSON object optimized for direct agent consumption. "
+            "'full_json_string': Returns the complete, raw JSON data serialized as a string. "
+            "'full_json_file': Returns a summarized JSON object AND saves the complete data to a file."
+        )
     )
-) -> List[dict]:
+) -> Union[List[dict], str]:
     """Get detailed exception info for a specific file.
     
     Args:
         filepath: Path to the file to search for exceptions (full path including extension)
         age: Number of minutes to look back (positive integer, max 7 days/10080 minutes)
+        output_mode: Controls the output format and detail level
     
     Returns:
-        List of exception details found in the specified file
+        Based on output_mode:
+        - compact: List of summarized exception details
+        - full_json_string: String containing the full JSON response
+        - full_json_file: List of summarized exception details with file save info
     """
     state = cast(MCPState, ctx.request_context.lifespan_context)
     
@@ -879,10 +1335,11 @@ async def find_exceptions_in_file(
         # Only take the top 10 exceptions
         top_exceptions = exceptions[:10]
         
-        # Process and truncate large values
-        processed_exceptions = process_response_data(top_exceptions)
+        # Process based on output mode
+        base_filename_prefix = f"exceptions_{os.path.basename(filepath)}"
+        processed_exceptions = process_data_with_mode(top_exceptions, output_mode, base_filename_prefix, state)
         
-        logger.info(f"Found {len(processed_exceptions)} exceptions in file {filepath}")
+        logger.info(f"Found {len(exceptions)} exceptions in file {filepath}, returning with output_mode={output_mode}")
         return processed_exceptions
     except Exception as e:
         logger.error(f"Error finding exceptions in file {filepath}: {str(e)}")
@@ -893,16 +1350,29 @@ async def find_exceptions_in_file(
 async def get_exception_details(
     ctx: Context,
     trace_id: str = Field(..., description="The ID of the trace to analyze for exceptions (unique identifier string)"),
-    span_id: str = Field(None, description="Optional span ID to filter by specific span (unique identifier string)")
-) -> List[dict]:
+    span_id: str = Field(None, description="Optional span ID to filter by specific span (unique identifier string)"),
+    output_mode: OUTPUT_MODE_LITERAL = Field(
+        OutputMode.COMPACT,
+        description=(
+            "Controls the output format and action. "
+            "'compact' (default): Returns a summarized JSON object optimized for direct agent consumption. "
+            "'full_json_string': Returns the complete, raw JSON data serialized as a string. "
+            "'full_json_file': Returns a summarized JSON object AND saves the complete data to a file."
+        )
+    )
+) -> Union[List[dict], str]:
     """Get detailed exception info for a trace/span.
     
     Args:
         trace_id: The ID of the trace to analyze for exceptions (unique identifier string)
         span_id: Optional span ID to filter by specific span (unique identifier string)
+        output_mode: Controls the output format and detail level
     
     Returns:
-        List of detailed exception information objects found in the specified trace/span
+        Based on output_mode:
+        - compact: List of summarized exception details
+        - full_json_string: String containing the full JSON response
+        - full_json_file: List of summarized exception details with file save info
     """
     state = cast(MCPState, ctx.request_context.lifespan_context)
     
@@ -973,10 +1443,13 @@ async def get_exception_details(
         # Sort exceptions by timestamp (newest first)
         exceptions.sort(key=lambda x: x['timestamp'] if isinstance(x['timestamp'], str) else '', reverse=True)
         
-        # Process and truncate large values in exception details
-        processed_exceptions = process_response_data(exceptions)
+        # Process based on output mode
+        base_filename_prefix = f"exceptions_trace_{trace_id}"
+        if span_id:
+            base_filename_prefix += f"_span_{span_id}"
+        processed_exceptions = process_data_with_mode(exceptions, output_mode, base_filename_prefix, state)
         
-        logger.info(f"Found {len(processed_exceptions)} exceptions in trace {trace_id}")
+        logger.info(f"Found {len(exceptions)} exceptions in trace {trace_id}, returning with output_mode={output_mode}")
         return processed_exceptions
     except Exception as e:
         logger.error(f"Error getting exception details for trace {trace_id}: {str(e)}")
@@ -1173,7 +1646,7 @@ Scores are evaluations attached to traces or observations.
     return schema
 
 
-def app_factory(public_key: str, secret_key: str, host: str, cache_size: int = 100) -> FastMCP:
+def app_factory(public_key: str, secret_key: str, host: str, cache_size: int = 100, dump_dir: str = None) -> FastMCP:
     """Create a FastMCP server with Langfuse tools.
     
     Args:
@@ -1181,6 +1654,7 @@ def app_factory(public_key: str, secret_key: str, host: str, cache_size: int = 1
         secret_key: Langfuse secret key
         host: Langfuse API host URL
         cache_size: Size of LRU caches used for caching data
+        dump_dir: Directory to save full JSON dumps when 'output_mode' is 'full_json_file'. The directory will be created if it doesn't exist.
         
     Returns:
         FastMCP server instance
@@ -1210,7 +1684,8 @@ def app_factory(public_key: str, secret_key: str, host: str, cache_size: int = 1
             observation_cache=LRUCache(maxsize=cache_size),
             file_to_observations_map=LRUCache(maxsize=cache_size),
             exception_type_map=LRUCache(maxsize=cache_size),
-            exceptions_by_filepath=LRUCache(maxsize=cache_size)
+            exceptions_by_filepath=LRUCache(maxsize=cache_size),
+            dump_dir=dump_dir
         )
         
         try:
@@ -1273,15 +1748,31 @@ def main():
         default=100,
         help="Size of LRU caches used for caching data"
     )
+    parser.add_argument(
+        "--dump-dir",
+        type=str,
+        default="/tmp/langfuse_mcp_dumps",
+        help="Directory to save full JSON dumps when 'output_mode' is 'full_json_file'. The directory will be created if it doesn't exist."
+    )
     
     args = parser.parse_args()
     
+    # Create dump directory if it doesn't exist
+    if args.dump_dir:
+        try:
+            os.makedirs(args.dump_dir, exist_ok=True)
+            logger.info(f"Dump directory configured: {args.dump_dir}")
+        except (PermissionError, OSError) as e:
+            logger.error(f"Failed to create dump directory {args.dump_dir}: {e}")
+            args.dump_dir = None
+            
     logger.info(f"Starting MCP - host:{args.host} cache:{args.cache_size} keys:{args.public_key[:4]}.../{args.secret_key[:4]}...")
     app = app_factory(
         public_key=args.public_key,
         secret_key=args.secret_key,
         host=args.host,
-        cache_size=args.cache_size
+        cache_size=args.cache_size,
+        dump_dir=args.dump_dir
     )
     
     app.run(transport="stdio")
