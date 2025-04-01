@@ -1,1 +1,1 @@
-"""Test package for langfuse-mcp.""" 
+"""Test package for langfuse-mcp."""
