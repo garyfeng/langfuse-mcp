@@ -22,6 +22,20 @@ This project uses dynamic versioning based on Git tags:
 
 For a detailed history of changes, please see the [CHANGELOG.md](CHANGELOG.md) file.
 
+### GitHub Actions Setup
+
+The CI workflows use the following approach:
+
+1. For test workflows: We use `--system` flag with `uv pip install` since CI environments don't require virtual environments:
+   ```yaml
+   - name: Install dependencies
+     run: uv pip install -e ".[dev]" --system
+   ```
+
+2. For publishing: We use GitHub's trusted publishing mechanism, which requires setting up:
+   - A GitHub environment named `release` with appropriate secrets
+   - PyPI API tokens with trusted publishing configured
+
 ## Development
 
 To run the server locally:
