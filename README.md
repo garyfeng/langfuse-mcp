@@ -129,10 +129,16 @@ export LANGFUSE_HOST="https://cloud.langfuse.com"  # Or your self-hosted URL
 
 ### Testing
 
-To run the test client:
+To run the demo client:
 
 ```bash
-uv run test_mcp_client.py
+uv run examples/langfuse_client_demo.py --public-key YOUR_PUBLIC_KEY --secret-key YOUR_SECRET_KEY
+```
+
+Or use the convenience wrapper:
+
+```bash
+uv run run_mcp.py
 ```
 
 ## Version Management

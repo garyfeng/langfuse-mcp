@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Test client for the Langfuse MCP integration.
+"""Demo client for the Langfuse MCP integration.
 
-This script provides a test client implementation that connects to the Langfuse MCP
-server and demonstrates key functionality by executing various tool calls.
+This script provides a demonstration client implementation that connects to the Langfuse MCP
+server and shows key functionality by executing various tool calls.
 """
 
 import argparse
@@ -143,7 +143,7 @@ async def run_mcp_tools(public_key: str, secret_key: str, host: str):
 
 
 def main():
-    """Run the Langfuse MCP test client.
+    """Run the Langfuse MCP demo client.
 
     Parses command line arguments and runs the main MCP client loop.
     """
@@ -164,4 +164,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main() 

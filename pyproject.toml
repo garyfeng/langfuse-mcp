@@ -76,13 +76,15 @@ exclude = [
 include = [
     "/README.md",
     "/LICENSE",
+    "/MANIFEST.in",
     "/tests/",            # Include tests in source distribution
     "/pytest.ini",        # Include test configuration
-    "/.github/"           # Include GitHub workflows/configs
+    "/.github/",          # Include GitHub workflows/configs
+    "/examples/"          # Include examples in source distribution
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["langfuse_mcp"]
+packages = ["langfuse_mcp"]  # Only include the actual package in the wheel
 
 [dependency-groups]
 dev = ["ruff"]
