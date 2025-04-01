@@ -21,7 +21,7 @@ jobs:
       uses: astral-sh/setup-uv@v3
       
     - name: Install dependencies
-      run: uv pip install -e ".[dev]" --system
+      run: uv pip install -e ".[dev]"
       
     - name: Run tests
       run: uv run -m pytest
