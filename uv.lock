@@ -228,7 +228,7 @@ wheels = [
 
 [[package]]
 name = "langfuse-mcp"
-version = "0.1.6.dev7+c751dfa"
+version = "0.1.6.dev10+fe33ca6"
 source = { editable = "." }
 dependencies = [
     { name = "cachetools" },
