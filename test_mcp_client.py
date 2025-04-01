@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
+"""Test client for the Langfuse MCP integration.
+
+This script provides a test client implementation that connects to the Langfuse MCP
+server and demonstrates key functionality by executing various tool calls.
+"""
+import argparse
 import asyncio
 import json
 import logging
 import sys
-import argparse
-from datetime import UTC, datetime, timedelta
-from typing import Any, Dict, List, Union
 
-from mcp import ClientSession, StdioServerParameters 
+from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 # Configure logging
@@ -143,7 +146,10 @@ async def run_mcp_tools(public_key: str, secret_key: str, host: str):
             logger.info("\nMCP runner completed successfully!")
 
 def main():
-    """Main entry point for the MCP runner."""
+    """Run the Langfuse MCP test client.
+    
+    Parses command line arguments and runs the main MCP client loop.
+    """
     parser = argparse.ArgumentParser(description="Langfuse MCP Runner")
     parser.add_argument(
         "--public-key",
