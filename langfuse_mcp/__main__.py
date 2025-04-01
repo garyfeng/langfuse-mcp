@@ -134,6 +134,9 @@ class OutputMode(str, Enum):
 
 OUTPUT_MODE_LITERAL = Literal["compact", "full_json_string", "full_json_file"]
 
+# Define a custom Dict type for our standardized response format
+ResponseDict = dict[str, Any]
+
 
 def truncate_large_strings(
     obj: Any,
@@ -654,20 +657,16 @@ async def _embed_observations_in_traces(state: MCPState, traces: list[Any]) -> N
         logger.debug(f"Embedded {len(full_observations)} observations in trace {trace.get('id', 'unknown')}")
 
 
-# Define a custom Dict type for our standardized response format
-ResponseDict = dict[str, Any]
-
-
 async def fetch_traces(
     ctx: Context,
     age: int = Field(..., description="Minutes ago to start looking (e.g., 1440 for 24 hours)"),
-    name: str = Field(None, description="Name of the trace to filter by"),
-    user_id: str = Field(None, description="User ID to filter traces by"),
-    session_id: str = Field(None, description="Session ID to filter traces by"),
-    metadata: dict = Field(None, description="Metadata fields to filter by"),
+    name: str | None = Field(None, description="Name of the trace to filter by"),
+    user_id: str | None = Field(None, description="User ID to filter traces by"),
+    session_id: str | None = Field(None, description="Session ID to filter traces by"),
+    metadata: dict[str, Any] | None = Field(None, description="Metadata fields to filter by"),
     page: int = Field(1, description="Page number for pagination (starts at 1)"),
     limit: int = Field(50, description="Maximum number of traces to return per page"),
-    tags: str = Field(None, description="Tag or list of tags to filter traces by"),
+    tags: str | None = Field(None, description="Tag or comma-separated list of tags to filter traces by"),
     include_observations: bool = Field(
         False,
         description=(
@@ -702,7 +701,7 @@ async def fetch_traces(
         metadata: Metadata fields to filter by (optional)
         page: Page number for pagination (starts at 1)
         limit: Maximum number of traces to return per page
-        tags: Tag or list of tags to filter traces by
+        tags: Tag or comma-separated list of tags to filter traces by
         include_observations: If True, fetch and include the full observation objects instead of just IDs.
             Use this when you need access to system prompts, model parameters, or other details stored
             within observations. Significantly increases response time but provides complete data.
@@ -732,9 +731,17 @@ async def fetch_traces(
     from_timestamp = datetime.now(UTC) - timedelta(minutes=age)
 
     try:
+        # Process tags if it's a comma-separated string
+        tags_list = None
+        if tags:
+            if "," in tags:
+                tags_list = [tag.strip() for tag in tags.split(",") if tag.strip()]
+            else:
+                tags_list = [tags]
+
         # Use the fetch_traces method provided by the Langfuse SDK
         response = state.langfuse_client.fetch_traces(
-            name=name, user_id=user_id, session_id=session_id, from_timestamp=from_timestamp, page=page, limit=limit, tags=tags
+            name=name, user_id=user_id, session_id=session_id, from_timestamp=from_timestamp, page=page, limit=limit, tags=tags_list
         )
 
         # Convert response to a serializable format
@@ -871,14 +878,14 @@ async def fetch_trace(
 
 async def fetch_observations(
     ctx: Context,
-    type: Literal["SPAN", "GENERATION", "EVENT"] = Field(
+    type: Literal["SPAN", "GENERATION", "EVENT"] | None = Field(
         None, description="The observation type to filter by ('SPAN', 'GENERATION', or 'EVENT')"
     ),
     age: int = Field(..., description="Minutes ago to start looking (e.g., 1440 for 24 hours)"),
-    name: str = Field(None, description="Optional name filter (string pattern to match)"),
-    user_id: str = Field(None, description="Optional user ID filter (exact match)"),
-    trace_id: str = Field(None, description="Optional trace ID filter (exact match)"),
-    parent_observation_id: str = Field(None, description="Optional parent observation ID filter (exact match)"),
+    name: str | None = Field(None, description="Optional name filter (string pattern to match)"),
+    user_id: str | None = Field(None, description="Optional user ID filter (exact match)"),
+    trace_id: str | None = Field(None, description="Optional trace ID filter (exact match)"),
+    parent_observation_id: str | None = Field(None, description="Optional parent observation ID filter (exact match)"),
     page: int = Field(1, description="Page number for pagination (starts at 1)"),
     limit: int = Field(50, description="Maximum number of observations to return per page"),
     output_mode: OUTPUT_MODE_LITERAL = Field(
@@ -890,7 +897,7 @@ async def fetch_observations(
             "'full_json_file': Returns a summarized JSON object AND saves the complete data to a file."
         ),
     ),
-) -> list[dict] | str:
+) -> ResponseDict | str:
     """Get observations filtered by type and other criteria.
 
     Args:
@@ -978,7 +985,7 @@ async def fetch_observation(
             "'full_json_file': Returns a summarized JSON object AND saves the complete data to a file."
         ),
     ),
-) -> dict | str:
+) -> ResponseDict | str:
     """Get a single observation by ID.
 
     Args:
@@ -1042,7 +1049,7 @@ async def fetch_sessions(
             "'full_json_file': Returns a summarized JSON object AND saves the complete data to a file."
         ),
     ),
-) -> list[dict] | str:
+) -> ResponseDict | str:
     """Get a list of sessions in the current project.
 
     Args:
@@ -1103,7 +1110,7 @@ async def get_session_details(
             "'full_json_file': Returns a summarized JSON object AND saves the complete data to a file."
         ),
     ),
-) -> dict | str:
+) -> ResponseDict | str:
     """Get detailed information about a specific session.
 
     Args:
@@ -1199,7 +1206,7 @@ async def get_user_sessions(
             "'full_json_file': Returns a summarized JSON object AND saves the complete data to a file."
         ),
     ),
-) -> list[dict] | str:
+) -> ResponseDict | str:
     """Get sessions for a user within a time range.
 
     Args:
@@ -1413,7 +1420,7 @@ async def find_exceptions_in_file(
             "'full_json_file': Returns a summarized JSON object AND saves the complete data to a file."
         ),
     ),
-) -> list[dict] | str:
+) -> ResponseDict | str:
     """Get detailed exception info for a specific file.
 
     Args:
@@ -1499,7 +1506,7 @@ async def find_exceptions_in_file(
 async def get_exception_details(
     ctx: Context,
     trace_id: str = Field(..., description="The ID of the trace to analyze for exceptions (unique identifier string)"),
-    span_id: str = Field(None, description="Optional span ID to filter by specific span (unique identifier string)"),
+    span_id: str | None = Field(None, description="Optional span ID to filter by specific span (unique identifier string)"),
     output_mode: OUTPUT_MODE_LITERAL = Field(
         OutputMode.COMPACT,
         description=(
@@ -1509,7 +1516,7 @@ async def get_exception_details(
             "'full_json_file': Returns a summarized JSON object AND saves the complete data to a file."
         ),
     ),
-) -> list[dict] | str:
+) -> ResponseDict | str:
     """Get detailed exception info for a trace/span.
 
     Args:
@@ -1609,7 +1616,7 @@ async def get_error_count(
     age: ValidatedAge = Field(
         ..., description="Number of minutes to look back (positive integer, max 7 days/10080 minutes)", gt=0, le=7 * DAY
     ),
-) -> dict:
+) -> ResponseDict:
     """Get number of traces with exceptions in last N minutes.
 
     Args:
