@@ -7,6 +7,14 @@
 
 This project provides a Model Context Protocol (MCP) server for Langfuse, allowing AI agents to query Langfuse trace data for better debugging and observability.
 
+## Quick Start with Cursor
+
+[![Add to Cursor](https://img.shields.io/badge/Add%20to-Cursor-blue?style=for-the-badge&logo=cursor)](cursor://mcp/install?name=langfuse-mcp&command=uvx&args=%5B%22langfuse-mcp%22%2C%22--public-key%22%2C%22YOUR_PUBLIC_KEY%22%2C%22--secret-key%22%2C%22YOUR_SECRET_KEY%22%2C%22--host%22%2C%22https%3A//cloud.langfuse.com%22%5D)
+
+*Click the button above to automatically add this MCP server to Cursor IDE (requires Cursor 1.0+)*
+
+**Note:** Remember to replace `YOUR_PUBLIC_KEY` and `YOUR_SECRET_KEY` with your actual Langfuse credentials after installation.
+
 ## Features
 
 - Integration with Langfuse for trace and observation data
