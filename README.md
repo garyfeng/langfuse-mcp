@@ -9,7 +9,7 @@ This project provides a Model Context Protocol (MCP) server for Langfuse, allowi
 
 ## Quick Start with Cursor
 
-[![Add to Cursor](https://img.shields.io/badge/Add%20to-Cursor-blue?style=for-the-badge&logo=cursor)](cursor://mcp/install?name=langfuse-mcp&command=uvx&args=%5B%22langfuse-mcp%22%2C%22--public-key%22%2C%22YOUR_PUBLIC_KEY%22%2C%22--secret-key%22%2C%22YOUR_SECRET_KEY%22%2C%22--host%22%2C%22https%3A//cloud.langfuse.com%22%5D)
+[![Add to Cursor](https://img.shields.io/badge/Add%20to-Cursor-blue?style=for-the-badge&logo=cursor)](cursor://anysphere.cursor-deeplink/mcp/install?name=langfuse-mcp&config=eyJjb21tYW5kIjoidXZ4IiwiYXJncyI6WyJsYW5nZnVzZS1tY3AiLCItLXB1YmxpYy1rZXkiLCJZT1VSX1BVQkxJQ19LRVkiLCItLXNlY3JldC1rZXkiLCJZT1VSX1NFQ1JFVF9LRVkiLCItLWhvc3QiLCJodHRwczovL2Nsb3VkLmxhbmdmdXNlLmNvbSJdfQ==)
 
 *Click the button above to automatically add this MCP server to Cursor IDE (requires Cursor 1.0+)*
 
