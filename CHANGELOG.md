@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8] - 2025-01-05
+
+### Added
+- Comprehensive test suite with 10 tests covering all functionality
+- Enhanced CI workflow with improved logging and verbose output
+- Complete documentation with proper docstrings for all test files
+
+### Changed
+- Improved GitHub Actions workflow for better visibility and debugging
+- Enhanced repository structure with complete test coverage
+
+### Fixed
+- All linting and formatting issues resolved
+- Proper dependency management and build process
+
 ## [0.1.7] - 2025-01-05
 
 ### Changed
