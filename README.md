@@ -9,9 +9,16 @@ This project provides a Model Context Protocol (MCP) server for Langfuse, allowi
 
 ## Quick Start with Cursor
 
-[![Add to Cursor](https://img.shields.io/badge/Add%20to-Cursor-blue?style=for-the-badge&logo=cursor)](cursor://anysphere.cursor-deeplink/mcp/install?name=langfuse-mcp&config=eyJjb21tYW5kIjoidXZ4IiwiYXJncyI6WyJsYW5nZnVzZS1tY3AiLCItLXB1YmxpYy1rZXkiLCJZT1VSX1BVQkxJQ19LRVkiLCItLXNlY3JldC1rZXkiLCJZT1VSX1NFQ1JFVF9LRVkiLCItLWhvc3QiLCJodHRwczovL2Nsb3VkLmxhbmdmdXNlLmNvbSJdfQ==)
+<a href="cursor://anysphere.cursor-deeplink/mcp/install?name=langfuse-mcp&config=eyJjb21tYW5kIjoidXZ4IiwiYXJncyI6WyJsYW5nZnVzZS1tY3AiLCItLXB1YmxpYy1rZXkiLCJZT1VSX1BVQkxJQ19LRVkiLCItLXNlY3JldC1rZXkiLCJZT1VSX1NFQ1JFVF9LRVkiLCItLWhvc3QiLCJodHRwczovL2Nsb3VkLmxhbmdmdXNlLmNvbSJdfQ==">
+  <img src="https://img.shields.io/badge/Add%20to-Cursor-blue?style=for-the-badge&logo=cursor" alt="Add to Cursor">
+</a>
 
-*Click the button above to automatically add this MCP server to Cursor IDE (requires Cursor 1.0+)*
+**One-Click Install**: Click the button above to automatically add this MCP server to Cursor IDE (requires Cursor 1.0+)
+
+**Alternative**: If the button doesn't work from GitHub web, copy and paste this deeplink directly into your browser:
+```
+cursor://anysphere.cursor-deeplink/mcp/install?name=langfuse-mcp&config=eyJjb21tYW5kIjoidXZ4IiwiYXJncyI6WyJsYW5nZnVzZS1tY3AiLCItLXB1YmxpYy1rZXkiLCJZT1VSX1BVQkxJQ19LRVkiLCItLXNlY3JldC1rZXkiLCJZT1VSX1NFQ1JFVF9LRVkiLCItLWhvc3QiLCJodHRwczovL2Nsb3VkLmxhbmdmdXNlLmNvbSJdfQ==
+```
 
 **Note:** Remember to replace `YOUR_PUBLIC_KEY` and `YOUR_SECRET_KEY` with your actual Langfuse credentials after installation.
 
