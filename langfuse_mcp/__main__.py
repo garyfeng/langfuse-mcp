@@ -2337,6 +2337,7 @@ def main():
     """Entry point for the langfuse_mcp package."""
     _load_env_file()
     env_defaults = _read_env_defaults()
+    logger.debug("Environment defaults loaded: %s", {k: ('***' if 'key' in k else v) for k, v in env_defaults.items()})
     parser = _build_arg_parser(env_defaults)
     args = parser.parse_args()
 
