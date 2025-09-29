@@ -18,7 +18,7 @@ def state(tmp_path):
 
 
 def test_fetch_traces_with_observations(state):
-    """Test fetching traces with observations included."""
+    """fetch_traces should use the v3 traces resource and embed observations."""
     from langfuse_mcp.__main__ import fetch_traces
 
     ctx = FakeContext(state)
@@ -41,20 +41,24 @@ def test_fetch_traces_with_observations(state):
     assert result["data"][0]["id"] == "trace_1"
     assert isinstance(result["data"][0]["observations"], list)
     assert result["data"][0]["observations"][0]["id"] == "obs_1"
+    assert state.langfuse_client.traces.last_list_kwargs is not None
+    assert state.langfuse_client.traces.last_list_kwargs["include_observations"] is True
+    assert state.langfuse_client.traces.last_list_kwargs["limit"] == 50
 
 
 def test_fetch_trace(state):
-    """Test fetching a single trace by ID."""
+    """fetch_trace should pull from the v3 traces resource."""
     from langfuse_mcp.__main__ import fetch_trace
 
     ctx = FakeContext(state)
     result = asyncio.run(fetch_trace(ctx, trace_id="trace_1", include_observations=True, output_mode="compact"))
     assert result["data"]["id"] == "trace_1"
     assert result["data"]["observations"][0]["id"] == "obs_1"
+    assert state.langfuse_client.traces.last_get_kwargs == {"trace_id": "trace_1", "include_observations": True}
 
 
 def test_fetch_observations(state):
-    """Test fetching observations with filters."""
+    """fetch_observations should call the v3 observations resource."""
     from langfuse_mcp.__main__ import fetch_observations
 
     ctx = FakeContext(state)
@@ -74,32 +78,39 @@ def test_fetch_observations(state):
     )
     assert result["metadata"]["item_count"] == 1
     assert result["data"][0]["id"] == "obs_1"
+    assert state.langfuse_client.observations.last_list_kwargs is not None
+    assert state.langfuse_client.observations.last_list_kwargs["limit"] == 50
 
 
 def test_fetch_observation(state):
-    """Test fetching a single observation by ID."""
+    """fetch_observation should hit the observations resource."""
     from langfuse_mcp.__main__ import fetch_observation
 
     ctx = FakeContext(state)
     result = asyncio.run(fetch_observation(ctx, observation_id="obs_1", output_mode="compact"))
     assert result["data"]["id"] == "obs_1"
+    assert state.langfuse_client.observations.last_get_kwargs == {"observation_id": "obs_1"}
 
 
 def test_fetch_sessions(state):
-    """Test fetching sessions with filters."""
+    """fetch_sessions should rely on the v3 sessions resource."""
     from langfuse_mcp.__main__ import fetch_sessions
 
     ctx = FakeContext(state)
     result = asyncio.run(fetch_sessions(ctx, age=10, page=1, limit=50, output_mode="compact"))
     assert result["metadata"]["item_count"] == 1
     assert result["data"][0]["id"] == "session_1"
+    assert state.langfuse_client.sessions.last_list_kwargs is not None
+    assert state.langfuse_client.sessions.last_list_kwargs["limit"] == 50
 
 
 def test_get_session_details(state):
-    """Test getting detailed session information."""
+    """get_session_details should reuse the v3 traces resource."""
     from langfuse_mcp.__main__ import get_session_details
 
     ctx = FakeContext(state)
     result = asyncio.run(get_session_details(ctx, session_id="session_1", include_observations=True, output_mode="compact"))
     assert result["data"]["found"] is True
     assert result["data"]["trace_count"] == 1
+    assert state.langfuse_client.traces.last_list_kwargs is not None
+    assert state.langfuse_client.traces.last_list_kwargs["filters"]["session_id"] == "session_1"

@@ -60,9 +60,23 @@ If you already have an older version of `uv` installed, you might need to update
 
 ### Installation
 
+> **Requirement**: The server now depends on the Langfuse Python SDK v3. Installations automatically pull `langfuse>=3.0.0`.
+
 ```bash
 uv pip install langfuse-mcp
 ```
+
+### Recommended local environment
+
+For development we suggest creating an isolated environment pinned to Python 3.11 (the version used in CI):
+
+```bash
+uv venv --python 3.11 .venv
+source .venv/bin/activate  # On Windows use: .venv\Scripts\activate
+uv pip install --python .venv/bin/python -e .
+```
+
+All subsequent examples assume the virtual environment is activated.
 
 ### Obtain Langfuse credentials
 
@@ -73,11 +87,16 @@ You'll need your Langfuse credentials:
 
 ## Running the Server
 
-Run the server using `uvx`:
+Run the server using `uvx` or the project virtual environment:
 
 ```bash
 uvx langfuse-mcp --public-key YOUR_KEY --secret-key YOUR_SECRET --host https://cloud.langfuse.com
+
+# or, once inside the repo virtual environment
+langfuse-mcp --public-key YOUR_KEY --secret-key YOUR_SECRET --host https://cloud.langfuse.com
 ```
+
+The server writes diagnostic logs to `/tmp/langfuse_mcp.log`. Remove the `--host` switch if you are targeting the default Cloud endpoint.
 
 ## Configuration with MCP clients
 
@@ -133,9 +152,9 @@ cd langfuse-mcp
 ### Create a virtual environment and install dependencies
 
 ```bash
-uv venv
+uv venv --python 3.11 .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-uv pip install -e ".[dev]"
+uv pip install --python .venv/bin/python -e ".[dev]"
 ```
 
 ### Set up environment variables
@@ -147,6 +166,12 @@ export LANGFUSE_HOST="https://cloud.langfuse.com"  # Or your self-hosted URL
 ```
 
 ### Testing
+
+Run the unit test suite (mirrors CI):
+
+```bash
+pytest
+```
 
 To run the demo client:
 
@@ -172,6 +197,13 @@ This project uses dynamic versioning based on Git tags:
 3. The GitHub workflow will automatically build and publish the package with the correct version to PyPI
 
 For a detailed history of changes, please see the [CHANGELOG.md](CHANGELOG.md) file.
+
+## Langfuse 3.x migration notes
+
+- The MCP server now uses the Langfuse Python SDK v3 resource clients (`langfuse.traces.list`, `langfuse.observations.list`, etc.).
+- Unit tests use a v3-style fake client that fails if legacy `fetch_*` helpers are invoked, helping catch regressions early.
+- Tool responses now include pagination metadata when the Langfuse API returns cursors, while retaining the existing MCP interface.
+- Diagnostic logs continue to stream to `/tmp/langfuse_mcp.log`; this is useful when verifying the upgraded integration against a live Langfuse deployment.
 
 ## Contributing
 

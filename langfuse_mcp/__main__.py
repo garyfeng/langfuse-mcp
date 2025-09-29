@@ -138,6 +138,247 @@ OUTPUT_MODE_LITERAL = Literal["compact", "full_json_string", "full_json_file"]
 ResponseDict = dict[str, Any]
 
 
+def _sdk_object_to_python(obj: Any) -> Any:
+    """Convert Langfuse SDK models (pydantic/dataclasses) into plain Python types."""
+
+    if obj is None:
+        return None
+
+    if isinstance(obj, (str, int, float, bool)):
+        return obj
+
+    if isinstance(obj, datetime):
+        # Preserve timezone info when available
+        return obj.isoformat()
+
+    if isinstance(obj, (list, tuple, set)):
+        return [_sdk_object_to_python(item) for item in obj]
+
+    if isinstance(obj, dict):
+        return {key: _sdk_object_to_python(value) for key, value in obj.items()}
+
+    if hasattr(obj, "model_dump"):
+        return _sdk_object_to_python(obj.model_dump())
+
+    if hasattr(obj, "dict"):
+        return _sdk_object_to_python(obj.dict())
+
+    if hasattr(obj, "__dict__"):
+        data = {key: value for key, value in vars(obj).items() if not key.startswith("_")}
+        return _sdk_object_to_python(data)
+
+    return obj
+
+
+def _extract_items_from_response(response: Any) -> tuple[list[Any], dict[str, Any]]:
+    """Normalize Langfuse SDK list responses into items and pagination metadata."""
+
+    if response is None:
+        return [], {}
+
+    if isinstance(response, dict):
+        items = response.get("items") or response.get("data") or []
+        pagination = response.get("meta") or {}
+        return list(items), pagination
+
+    if hasattr(response, "items"):
+        items = getattr(response, "items")
+        pagination = {
+            "next_page": getattr(response, "next_page", None),
+            "total": getattr(response, "total", None),
+        }
+        return list(items), pagination
+
+    if hasattr(response, "data"):
+        return list(response.data), {}
+
+    if isinstance(response, list):
+        return response, {}
+
+    return [response], {}
+
+
+def _list_traces(
+    langfuse_client: Any,
+    *,
+    limit: int,
+    page: int,
+    include_observations: bool,
+    tags: list[str] | None,
+    from_timestamp: datetime,
+    name: str | None,
+    user_id: str | None,
+    session_id: str | None,
+    metadata: dict[str, Any] | None,
+) -> tuple[list[Any], dict[str, Any]]:
+    """Fetch traces via the Langfuse SDK handling both v2 and v3 signatures."""
+
+    cleaned_filters: dict[str, Any] = {}
+    if name:
+        cleaned_filters["name"] = name
+    if user_id:
+        cleaned_filters["user_id"] = user_id
+    if session_id:
+        cleaned_filters["session_id"] = session_id
+    if tags:
+        cleaned_filters["tags"] = tags
+    if metadata:
+        cleaned_filters["metadata"] = metadata
+
+    created_after = from_timestamp.isoformat()
+
+    if hasattr(langfuse_client, "traces") and hasattr(langfuse_client.traces, "list"):
+        list_kwargs: dict[str, Any] = {
+            "limit": limit,
+            "include_observations": include_observations,
+        }
+        # Support cursor-based pagination while keeping page compatibility for the old interface
+        if page > 1:
+            list_kwargs["page"] = page
+
+        # Try the "filters" style signature first, fall back to expanded kwargs if necessary
+        if cleaned_filters:
+            list_kwargs["filters"] = {**cleaned_filters, "created_after": created_after}
+        else:
+            list_kwargs["filters"] = {"created_after": created_after}
+
+        try:
+            response = langfuse_client.traces.list(**list_kwargs)
+        except TypeError:
+            # Some SDK builds expose named arguments instead of a filters dict
+            list_kwargs.pop("filters", None)
+            list_kwargs.update(cleaned_filters)
+            list_kwargs["created_after"] = created_after
+            response = langfuse_client.traces.list(**list_kwargs)
+
+        return _extract_items_from_response(response)
+
+    # v2 fallback for completeness (should be removed after migration)
+    response = langfuse_client.fetch_traces(
+        name=name,
+        user_id=user_id,
+        session_id=session_id,
+        from_timestamp=from_timestamp,
+        page=page,
+        limit=limit,
+        tags=tags,
+    )
+    return _extract_items_from_response(response)
+
+
+def _list_observations(
+    langfuse_client: Any,
+    *,
+    limit: int,
+    page: int,
+    from_start_time: datetime,
+    to_start_time: datetime | None,
+    obs_type: str | None,
+    name: str | None,
+    user_id: str | None,
+    trace_id: str | None,
+    parent_observation_id: str | None,
+) -> tuple[list[Any], dict[str, Any]]:
+    """Fetch observations via the Langfuse SDK handling v2/v3 differences."""
+
+    filters: dict[str, Any] = {
+        "created_after": from_start_time.isoformat(),
+    }
+    if to_start_time:
+        filters["created_before"] = to_start_time.isoformat()
+    if obs_type:
+        filters["type"] = obs_type
+    if name:
+        filters["name"] = name
+    if user_id:
+        filters["user_id"] = user_id
+    if trace_id:
+        filters["trace_id"] = trace_id
+    if parent_observation_id:
+        filters["parent_observation_id"] = parent_observation_id
+
+    if hasattr(langfuse_client, "observations") and hasattr(langfuse_client.observations, "list"):
+        list_kwargs: dict[str, Any] = {"limit": limit, "page": page}
+
+        if filters:
+            list_kwargs["filters"] = filters
+
+        try:
+            response = langfuse_client.observations.list(**list_kwargs)
+        except TypeError:
+            list_kwargs.pop("filters", None)
+            list_kwargs.update(filters)
+            response = langfuse_client.observations.list(**list_kwargs)
+
+        return _extract_items_from_response(response)
+
+    response = langfuse_client.fetch_observations(
+        type=obs_type,
+        name=name,
+        user_id=user_id,
+        trace_id=trace_id,
+        parent_observation_id=parent_observation_id,
+        from_start_time=from_start_time,
+        to_start_time=to_start_time,
+        page=page,
+        limit=limit,
+    )
+    return _extract_items_from_response(response)
+
+
+def _get_observation(langfuse_client: Any, observation_id: str) -> Any:
+    """Fetch a single observation using either the v3 or v2 SDK surface."""
+
+    if hasattr(langfuse_client, "observations") and hasattr(langfuse_client.observations, "get"):
+        return langfuse_client.observations.get(observation_id=observation_id)
+
+    response = langfuse_client.fetch_observation(observation_id)
+    return getattr(response, "data", response)
+
+
+def _get_trace(langfuse_client: Any, trace_id: str, include_observations: bool) -> Any:
+    """Fetch a single trace handling SDK version differences."""
+
+    if hasattr(langfuse_client, "traces") and hasattr(langfuse_client.traces, "get"):
+        get_kwargs = {"trace_id": trace_id, "include_observations": include_observations}
+        try:
+            return langfuse_client.traces.get(**get_kwargs)
+        except TypeError:
+            # Some SDK versions expect positional trace_id
+            return langfuse_client.traces.get(trace_id, include_observations=include_observations)
+
+    response = langfuse_client.fetch_trace(trace_id)
+    return getattr(response, "data", response)
+
+
+def _list_sessions(
+    langfuse_client: Any,
+    *,
+    limit: int,
+    page: int,
+    from_timestamp: datetime,
+) -> tuple[list[Any], dict[str, Any]]:
+    """Fetch sessions via the Langfuse SDK handling v2/v3 differences."""
+
+    filters = {"created_after": from_timestamp.isoformat()}
+
+    if hasattr(langfuse_client, "sessions") and hasattr(langfuse_client.sessions, "list"):
+        list_kwargs: dict[str, Any] = {"limit": limit, "page": page}
+        list_kwargs["filters"] = filters
+
+        try:
+            response = langfuse_client.sessions.list(**list_kwargs)
+        except TypeError:
+            list_kwargs.pop("filters", None)
+            list_kwargs.update(filters)
+            response = langfuse_client.sessions.list(**list_kwargs)
+
+        return _extract_items_from_response(response)
+
+    response = langfuse_client.fetch_sessions(from_timestamp=from_timestamp, page=page, limit=limit)
+    return _extract_items_from_response(response)
+
+
 def truncate_large_strings(
     obj: Any,
     max_length: int = MAX_FIELD_LENGTH,
@@ -537,7 +778,8 @@ def clear_caches(state: MCPState) -> None:
 def _get_cached_observation(langfuse_client: Langfuse, observation_id: str) -> Any:
     """Cache observation details to avoid duplicate API calls."""
     try:
-        return langfuse_client.fetch_observation(observation_id).data
+        observation = _get_observation(langfuse_client, observation_id)
+        return _sdk_object_to_python(observation)
     except Exception as e:
         logger.warning(f"Error fetching observation {observation_id}: {str(e)}")
         return None
@@ -568,38 +810,60 @@ async def _efficient_fetch_observations(
         return state.observation_cache[cache_key]
 
     # Fetch observations from Langfuse
-    observations_response = langfuse_client.fetch_observations(
+    observation_items, _ = _list_observations(
+        langfuse_client,
+        limit=500,
+        page=1,
         from_start_time=from_timestamp,
         to_start_time=to_timestamp,
-        type="SPAN",
+        obs_type="SPAN",
+        name=None,
+        user_id=None,
+        trace_id=None,
+        parent_observation_id=None,
     )
 
     # Process observations and build indices
-    observations = {}
-    for obs in observations_response.data:
-        if not hasattr(obs, "events") or not obs.events:
+    observations: dict[str, Any] = {}
+    for obs in observation_items:
+        events = []
+        if hasattr(obs, "events"):
+            events = getattr(obs, "events") or []
+        elif isinstance(obs, dict):
+            events = obs.get("events", [])
+
+        if not events:
             continue
 
-        for event in obs.events:
-            if not event.attributes.get("exception.type"):
+        for event in events:
+            attributes = getattr(event, "attributes", None)
+            if attributes is None and isinstance(event, dict):
+                attributes = event.get("attributes")
+            if not attributes or not attributes.get("exception.type"):
                 continue
 
             # Store observation
-            observations[obs.id] = obs
+            obs_id = getattr(obs, "id", None) or obs.get("id") if isinstance(obs, dict) else None
+            if not obs_id:
+                continue
+            observations[obs_id] = _sdk_object_to_python(obs)
 
             # Update file index if we have filepath info
-            if hasattr(obs, "metadata") and obs.metadata:
-                file = obs.metadata.get("code.filepath")
+            metadata_block = getattr(obs, "metadata", None)
+            if metadata_block is None and isinstance(obs, dict):
+                metadata_block = obs.get("metadata")
+            if metadata_block:
+                file = metadata_block.get("code.filepath")
                 if file:
                     if file not in state.file_to_observations_map:
                         state.file_to_observations_map[file] = set()
-                    state.file_to_observations_map[file].add(obs.id)
+                    state.file_to_observations_map[file].add(obs_id)
 
             # Update exception type index
-            exc_type = event.attributes["exception.type"]
+            exc_type = attributes["exception.type"]
             if exc_type not in state.exception_type_map:
                 state.exception_type_map[exc_type] = set()
-            state.exception_type_map[exc_type].add(obs.id)
+            state.exception_type_map[exc_type].add(obs_id)
 
     # Cache the processed observations
     state.observation_cache[cache_key] = observations
@@ -624,35 +888,32 @@ async def _embed_observations_in_traces(state: MCPState, traces: list[Any]) -> N
         if not isinstance(trace, dict) or "observations" not in trace:
             continue
 
-        observation_ids = trace["observations"]
-        if not isinstance(observation_ids, list):
+        observation_refs = trace["observations"]
+        if not isinstance(observation_refs, list):
             continue
 
         # Skip if there are no observations
-        if not observation_ids:
+        if not observation_refs:
             continue
 
-        # Fetch each observation
+        # If we already have hydrated observation objects, normalize them and continue
+        first_ref = observation_refs[0]
+        if not isinstance(first_ref, str):
+            trace["observations"] = [_sdk_object_to_python(obs) for obs in observation_refs]
+            continue
+
+        # Fetch each observation when only IDs are provided
         full_observations = []
-        for obs_id in observation_ids:
+        for obs_id in observation_refs:
             try:
-                # Use the client to fetch the observation
-                obs_response = state.langfuse_client.fetch_observation(obs_id)
-
-                # Convert to serializable format
-                if hasattr(obs_response.data, "dict"):
-                    obs_data = obs_response.data.dict()
-                else:
-                    obs_data = obs_response.data
-
+                obs = _get_observation(state.langfuse_client, obs_id)
+                obs_data = _sdk_object_to_python(obs)
                 full_observations.append(obs_data)
                 logger.debug(f"Fetched observation {obs_id} for trace {trace.get('id', 'unknown')}")
             except Exception as e:
                 logger.warning(f"Error fetching observation {obs_id}: {str(e)}")
-                # Include a placeholder with the ID for reference
                 full_observations.append({"id": obs_id, "fetch_error": str(e)})
 
-        # Replace the observation IDs with the full objects
         trace["observations"] = full_observations
         logger.debug(f"Embedded {len(full_observations)} observations in trace {trace.get('id', 'unknown')}")
 
@@ -739,13 +1000,22 @@ async def fetch_traces(
             else:
                 tags_list = [tags]
 
-        # Use the fetch_traces method provided by the Langfuse SDK
-        response = state.langfuse_client.fetch_traces(
-            name=name, user_id=user_id, session_id=session_id, from_timestamp=from_timestamp, page=page, limit=limit, tags=tags_list
+        # Use the resource-style API when available (Langfuse v3) with fallback to v2 helpers
+        trace_items, pagination = _list_traces(
+            state.langfuse_client,
+            limit=limit,
+            page=page,
+            include_observations=include_observations,
+            tags=tags_list,
+            from_timestamp=from_timestamp,
+            name=name,
+            user_id=user_id,
+            session_id=session_id,
+            metadata=metadata,
         )
 
         # Convert response to a serializable format
-        raw_traces = [trace.dict() if hasattr(trace, "dict") else trace for trace in response.data]
+        raw_traces = [_sdk_object_to_python(trace) for trace in trace_items]
 
         # If include_observations is True, fetch and embed the full observation objects
         if include_observations and raw_traces:
@@ -778,7 +1048,16 @@ async def fetch_traces(
         if output_mode == OutputMode.FULL_JSON_STRING:
             return processed_data
         else:
-            return {"data": processed_data, "metadata": {"item_count": len(raw_traces), "file_path": file_path, "file_info": file_info}}
+            metadata_block = {
+                "item_count": len(raw_traces),
+                "file_path": file_path,
+                "file_info": file_info,
+            }
+            if pagination.get("next_page") is not None:
+                metadata_block["next_page"] = pagination["next_page"]
+            if pagination.get("total") is not None:
+                metadata_block["total"] = pagination["total"]
+            return {"data": processed_data, "metadata": metadata_block}
     except Exception as e:
         logger.error(f"Error in fetch_traces: {str(e)}")
         logger.exception(e)
@@ -837,11 +1116,15 @@ async def fetch_trace(
     state = cast(MCPState, ctx.request_context.lifespan_context)
 
     try:
-        # Use the fetch_trace method provided by the Langfuse SDK
-        response = state.langfuse_client.fetch_trace(trace_id)
+        # Use the resource-style API when available
+        trace = _get_trace(state.langfuse_client, trace_id, include_observations)
 
         # Convert response to a serializable format
-        raw_trace = response.data.dict() if hasattr(response.data, "dict") else response.data
+        raw_trace = _sdk_object_to_python(trace)
+
+        if not isinstance(raw_trace, dict):
+            logger.debug("Trace response normalized into dictionary structure")
+            raw_trace = _sdk_object_to_python({"trace": raw_trace})
 
         # If include_observations is True, fetch and embed the full observation objects
         if include_observations and raw_trace:
@@ -924,20 +1207,21 @@ async def fetch_observations(
     from_start_time = datetime.now(UTC) - timedelta(minutes=age)
 
     try:
-        # Use the fetch_observations method provided by the Langfuse SDK
-        response = state.langfuse_client.fetch_observations(
-            type=type,
+        observation_items, pagination = _list_observations(
+            state.langfuse_client,
+            limit=limit,
+            page=page,
+            from_start_time=from_start_time,
+            to_start_time=None,
+            obs_type=type,
             name=name,
             user_id=user_id,
             trace_id=trace_id,
             parent_observation_id=parent_observation_id,
-            from_start_time=from_start_time,
-            page=page,
-            limit=limit,
         )
 
         # Convert response to a serializable format
-        raw_observations = [obs.dict() if hasattr(obs, "dict") else obs for obs in response.data]
+        raw_observations = [_sdk_object_to_python(obs) for obs in observation_items]
 
         # Process based on output mode
         base_filename_prefix = f"observations_{type or 'all'}"
@@ -963,10 +1247,16 @@ async def fetch_observations(
         if output_mode == OutputMode.FULL_JSON_STRING:
             return processed_data
         else:
-            return {
-                "data": processed_data,
-                "metadata": {"item_count": len(raw_observations), "file_path": file_path, "file_info": file_info},
+            metadata_block = {
+                "item_count": len(raw_observations),
+                "file_path": file_path,
+                "file_info": file_info,
             }
+            if pagination.get("next_page") is not None:
+                metadata_block["next_page"] = pagination["next_page"]
+            if pagination.get("total") is not None:
+                metadata_block["total"] = pagination["total"]
+            return {"data": processed_data, "metadata": metadata_block}
     except Exception as e:
         logger.error(f"Error fetching observations: {str(e)}")
         logger.exception(e)
@@ -1002,11 +1292,11 @@ async def fetch_observation(
     state = cast(MCPState, ctx.request_context.lifespan_context)
 
     try:
-        # Use the fetch_observation method provided by the Langfuse SDK
-        response = state.langfuse_client.fetch_observation(observation_id)
+        # Use the resource-style API when available
+        observation = _get_observation(state.langfuse_client, observation_id)
 
         # Convert response to a serializable format
-        raw_observation = response.data.dict() if hasattr(response.data, "dict") else response.data
+        raw_observation = _sdk_object_to_python(observation)
 
         # Process based on output mode
         base_filename_prefix = f"observation_{observation_id}"
@@ -1071,18 +1361,29 @@ async def fetch_sessions(
     from_timestamp = datetime.now(UTC) - timedelta(minutes=age)
 
     try:
-        # Use the fetch_sessions method provided by the Langfuse SDK
-        response = state.langfuse_client.fetch_sessions(from_timestamp=from_timestamp, page=page, limit=limit)
+        session_items, pagination = _list_sessions(
+            state.langfuse_client,
+            limit=limit,
+            page=page,
+            from_timestamp=from_timestamp,
+        )
 
         # Convert response to a serializable format
-        raw_sessions = [session.dict() if hasattr(session, "dict") else session for session in response.data]
+        raw_sessions = [_sdk_object_to_python(session) for session in session_items]
 
         # Process based on output mode
         base_filename_prefix = "sessions"
-        sessions = process_data_with_mode(raw_sessions, output_mode, base_filename_prefix, state)
+        sessions_payload = process_data_with_mode(raw_sessions, output_mode, base_filename_prefix, state)
 
         logger.info(f"Found {len(raw_sessions)} sessions, returning with output_mode={output_mode}")
-        return {"data": sessions, "metadata": {"item_count": len(raw_sessions), "file_path": None, "file_info": None}}
+
+        metadata_block = {"item_count": len(raw_sessions)}
+        if pagination.get("next_page") is not None:
+            metadata_block["next_page"] = pagination["next_page"]
+        if pagination.get("total") is not None:
+            metadata_block["total"] = pagination["total"]
+
+        return {"data": sessions_payload, "metadata": metadata_block}
     except Exception as e:
         logger.error(f"Error fetching sessions: {str(e)}")
         logger.exception(e)
@@ -1136,18 +1437,26 @@ async def get_session_details(
 
     try:
         # Fetch traces with this session ID
-        response = state.langfuse_client.fetch_traces(
+        trace_items, pagination = _list_traces(
+            state.langfuse_client,
+            limit=50,
+            page=1,
+            include_observations=include_observations,
+            tags=None,
+            from_timestamp=datetime.fromtimestamp(0, tz=UTC),
+            name=None,
+            user_id=None,
             session_id=session_id,
-            limit=50,  # Get a reasonable number of traces for this session
+            metadata=None,
         )
 
         # If no traces were found, return an empty dict
-        if not response.data:
+        if not trace_items:
             logger.info(f"No session found with ID: {session_id}")
             return {"id": session_id, "traces": [], "found": False}
 
         # Convert traces to a serializable format
-        raw_traces = [trace.dict() if hasattr(trace, "dict") else trace for trace in response.data]
+        raw_traces = [_sdk_object_to_python(trace) for trace in trace_items]
 
         # If include_observations is True, fetch and embed the full observation objects
         if include_observations and raw_traces:
@@ -1236,19 +1545,26 @@ async def get_user_sessions(
 
     try:
         # Fetch traces for this user
-        response = state.langfuse_client.fetch_traces(
-            user_id=user_id,
+        trace_items, pagination = _list_traces(
+            state.langfuse_client,
+            limit=100,
+            page=1,
+            include_observations=include_observations,
+            tags=None,
             from_timestamp=from_timestamp,
-            limit=100,  # Get a reasonable number of traces
+            name=None,
+            user_id=user_id,
+            session_id=None,
+            metadata=None,
         )
 
         # If no traces were found, return an empty list
-        if not response.data:
+        if not trace_items:
             logger.info(f"No sessions found for user: {user_id}")
             return []
 
         # Convert traces to a serializable format
-        raw_traces = [trace.dict() if hasattr(trace, "dict") else trace for trace in response.data]
+        raw_traces = [_sdk_object_to_python(trace) for trace in trace_items]
 
         # If include_observations is True, fetch and embed the full observation objects
         if include_observations and raw_traces:
@@ -1302,7 +1618,13 @@ async def get_user_sessions(
             f"Found {len(sessions)} sessions for user {user_id}, returning with output_mode={output_mode}, "
             f"include_observations={include_observations}"
         )
-        return {"data": result, "metadata": {"item_count": len(sessions), "file_path": None, "file_info": None}}
+        metadata_block = {"item_count": len(sessions)}
+        if pagination.get("next_page") is not None:
+            metadata_block["next_page"] = pagination["next_page"]
+        if pagination.get("total") is not None:
+            metadata_block["total"] = pagination["total"]
+
+        return {"data": result, "metadata": metadata_block}
     except Exception as e:
         logger.error(f"Error getting sessions for user {user_id}: {str(e)}")
         logger.exception(e)
@@ -1340,56 +1662,48 @@ async def find_exceptions(
 
     try:
         # Fetch all SPAN observations since they may contain exceptions
-        response = state.langfuse_client.fetch_observations(
-            type="SPAN",
+        observation_items, _ = _list_observations(
+            state.langfuse_client,
+            limit=100,
+            page=1,
             from_start_time=from_timestamp,
             to_start_time=to_timestamp,
-            limit=100,  # Adjust based on your needs
+            obs_type="SPAN",
+            name=None,
+            user_id=None,
+            trace_id=None,
+            parent_observation_id=None,
         )
 
         # Process observations to find and group exceptions
         exception_groups = Counter()
 
-        for observation in response.data:
-            # Check if this observation has exception events
-            if hasattr(observation, "events"):
-                for event in observation.events:
-                    if not isinstance(event, dict):
-                        event_dict = event.dict() if hasattr(event, "dict") else {}
-                    else:
-                        event_dict = event
+        for observation in (_sdk_object_to_python(obs) for obs in observation_items):
+            events = observation.get("events", []) if isinstance(observation, dict) else []
+            if not events:
+                continue
 
-                    # Check if this is an exception event
-                    if event_dict.get("attributes", {}).get("exception.type"):
-                        # Get the grouping key based on group_by parameter
-                        if group_by == "file":
-                            # Group by file path from metadata
-                            if hasattr(observation, "metadata") and observation.metadata:
-                                meta = observation.metadata
-                                if isinstance(meta, dict) and meta.get("code.filepath"):
-                                    group_key = meta.get("code.filepath")
-                                else:
-                                    group_key = "unknown_file"
-                            else:
-                                group_key = "unknown_file"
-                        elif group_by == "function":
-                            # Group by function name from metadata
-                            if hasattr(observation, "metadata") and observation.metadata:
-                                meta = observation.metadata
-                                if isinstance(meta, dict) and meta.get("code.function"):
-                                    group_key = meta.get("code.function")
-                                else:
-                                    group_key = "unknown_function"
-                            else:
-                                group_key = "unknown_function"
-                        elif group_by == "type":
-                            # Group by exception type
-                            group_key = event_dict.get("attributes", {}).get("exception.type", "unknown_exception")
-                        else:
-                            group_key = "unknown"
+            for event in events:
+                event_dict = event if isinstance(event, dict) else _sdk_object_to_python(event)
 
-                        # Increment the counter for this group
-                        exception_groups[group_key] += 1
+                # Check if this is an exception event
+                if not event_dict.get("attributes", {}).get("exception.type"):
+                    continue
+
+                # Get the grouping key based on group_by parameter
+                if group_by == "file":
+                    meta = observation.get("metadata", {}) if isinstance(observation, dict) else {}
+                    group_key = meta.get("code.filepath", "unknown_file")
+                elif group_by == "function":
+                    meta = observation.get("metadata", {}) if isinstance(observation, dict) else {}
+                    group_key = meta.get("code.function", "unknown_function")
+                elif group_by == "type":
+                    group_key = event_dict.get("attributes", {}).get("exception.type", "unknown_exception")
+                else:
+                    group_key = "unknown"
+
+                # Increment the counter for this group
+                exception_groups[group_key] += 1
 
         # Convert counter to list of ExceptionCount objects
         results = [
@@ -1443,47 +1757,50 @@ async def find_exceptions_in_file(
 
     try:
         # Fetch all SPAN observations since they may contain exceptions
-        response = state.langfuse_client.fetch_observations(
-            type="SPAN", from_start_time=from_timestamp, to_start_time=to_timestamp, limit=100
+        observation_items, _ = _list_observations(
+            state.langfuse_client,
+            limit=100,
+            page=1,
+            from_start_time=from_timestamp,
+            to_start_time=to_timestamp,
+            obs_type="SPAN",
+            name=None,
+            user_id=None,
+            trace_id=None,
+            parent_observation_id=None,
         )
 
         # Process observations to find exceptions in the specified file
         exceptions = []
 
-        for observation in response.data:
-            # Check if this observation is related to the specified file
-            file_matches = False
-            if hasattr(observation, "metadata") and observation.metadata:
-                meta = observation.metadata
-                if isinstance(meta, dict) and meta.get("code.filepath") == filepath:
-                    file_matches = True
-
-            if not file_matches:
+        for observation in (_sdk_object_to_python(obs) for obs in observation_items):
+            metadata = observation.get("metadata", {}) if isinstance(observation, dict) else {}
+            if metadata.get("code.filepath") != filepath:
                 continue
 
-            # Check if this observation has exception events
-            if hasattr(observation, "events"):
-                for event in observation.events:
-                    if not isinstance(event, dict):
-                        event_dict = event.dict() if hasattr(event, "dict") else {}
-                    else:
-                        event_dict = event
+            events = observation.get("events", []) if isinstance(observation, dict) else []
+            if not events:
+                continue
 
-                    # Check if this is an exception event
-                    if event_dict.get("attributes", {}).get("exception.type"):
-                        # Extract exception details
-                        exception_info = {
-                            "observation_id": observation.id if hasattr(observation, "id") else "unknown",
-                            "trace_id": observation.trace_id if hasattr(observation, "trace_id") else "unknown",
-                            "timestamp": observation.start_time if hasattr(observation, "start_time") else "unknown",
-                            "exception_type": event_dict.get("attributes", {}).get("exception.type", "unknown"),
-                            "exception_message": event_dict.get("attributes", {}).get("exception.message", ""),
-                            "exception_stacktrace": event_dict.get("attributes", {}).get("exception.stacktrace", ""),
-                            "function": meta.get("code.function", "unknown") if isinstance(meta, dict) else "unknown",
-                            "line_number": meta.get("code.lineno", "unknown") if isinstance(meta, dict) else "unknown",
-                        }
+            for event in events:
+                event_dict = event if isinstance(event, dict) else _sdk_object_to_python(event)
 
-                        exceptions.append(exception_info)
+                # Check if this is an exception event
+                if not event_dict.get("attributes", {}).get("exception.type"):
+                    continue
+
+                exception_info = {
+                    "observation_id": observation.get("id", "unknown") if isinstance(observation, dict) else "unknown",
+                    "trace_id": observation.get("trace_id", "unknown") if isinstance(observation, dict) else "unknown",
+                    "timestamp": observation.get("start_time", "unknown") if isinstance(observation, dict) else "unknown",
+                    "exception_type": event_dict.get("attributes", {}).get("exception.type", "unknown"),
+                    "exception_message": event_dict.get("attributes", {}).get("exception.message", ""),
+                    "exception_stacktrace": event_dict.get("attributes", {}).get("exception.stacktrace", ""),
+                    "function": metadata.get("code.function", "unknown"),
+                    "line_number": metadata.get("code.lineno", "unknown"),
+                }
+
+                exceptions.append(exception_info)
 
         # Sort exceptions by timestamp (newest first)
         exceptions.sort(key=lambda x: x["timestamp"] if isinstance(x["timestamp"], str) else "", reverse=True)
@@ -1535,64 +1852,71 @@ async def get_exception_details(
 
     try:
         # First get the trace details
-        trace_response = state.langfuse_client.fetch_trace(trace_id)
-        if not trace_response or not trace_response.data:
+        trace = _get_trace(state.langfuse_client, trace_id, include_observations=False)
+        trace_data = _sdk_object_to_python(trace)
+        if not trace_data:
             logger.warning(f"Trace not found: {trace_id}")
             return []
 
         # Get all observations for this trace
-        observations_response = state.langfuse_client.fetch_observations(
+        observation_items, _ = _list_observations(
+            state.langfuse_client,
+            limit=100,
+            page=1,
+            from_start_time=datetime.fromtimestamp(0, tz=UTC),
+            to_start_time=None,
+            obs_type=None,
+            name=None,
+            user_id=None,
             trace_id=trace_id,
-            limit=100,  # Get a reasonable number of observations
+            parent_observation_id=None,
         )
 
-        if not observations_response or not observations_response.data:
+        if not observation_items:
             logger.warning(f"No observations found for trace: {trace_id}")
             return []
 
         # Filter observations if span_id is provided
+        normalized_observations = [_sdk_object_to_python(obs) for obs in observation_items]
         if span_id:
-            filtered_observations = [obs for obs in observations_response.data if hasattr(obs, "id") and obs.id == span_id]
+            filtered_observations = [obs for obs in normalized_observations if obs.get("id") == span_id]
         else:
-            filtered_observations = observations_response.data
+            filtered_observations = normalized_observations
 
         # Process observations to find exceptions
         exceptions = []
 
         for observation in filtered_observations:
-            # Check if this observation has exception events
-            if hasattr(observation, "events"):
-                for event in observation.events:
-                    if not isinstance(event, dict):
-                        event_dict = event.dict() if hasattr(event, "dict") else {}
-                    else:
-                        event_dict = event
+            events = observation.get("events", []) if isinstance(observation, dict) else []
+            if not events:
+                continue
 
-                    # Check if this is an exception event
-                    if event_dict.get("attributes", {}).get("exception.type"):
-                        # Get metadata for additional context
-                        metadata = {}
-                        if hasattr(observation, "metadata") and observation.metadata:
-                            if isinstance(observation.metadata, dict):
-                                metadata = observation.metadata
+            for event in events:
+                event_dict = event if isinstance(event, dict) else _sdk_object_to_python(event)
 
-                        # Extract exception details
-                        exception_info = {
-                            "observation_id": observation.id if hasattr(observation, "id") else "unknown",
-                            "observation_name": observation.name if hasattr(observation, "name") else "unknown",
-                            "observation_type": observation.type if hasattr(observation, "type") else "unknown",
-                            "timestamp": observation.start_time if hasattr(observation, "start_time") else "unknown",
-                            "exception_type": event_dict.get("attributes", {}).get("exception.type", "unknown"),
-                            "exception_message": event_dict.get("attributes", {}).get("exception.message", ""),
-                            "exception_stacktrace": event_dict.get("attributes", {}).get("exception.stacktrace", ""),
-                            "filepath": metadata.get("code.filepath", "unknown"),
-                            "function": metadata.get("code.function", "unknown"),
-                            "line_number": metadata.get("code.lineno", "unknown"),
-                            "event_id": event_dict.get("id", "unknown"),
-                            "event_name": event_dict.get("name", "unknown"),
-                        }
+                # Check if this is an exception event
+                if not event_dict.get("attributes", {}).get("exception.type"):
+                    continue
 
-                        exceptions.append(exception_info)
+                metadata = observation.get("metadata", {}) if isinstance(observation, dict) else {}
+
+                # Extract exception details
+                exception_info = {
+                    "observation_id": observation.get("id", "unknown"),
+                    "observation_name": observation.get("name", "unknown"),
+                    "observation_type": observation.get("type", "unknown"),
+                    "timestamp": observation.get("start_time", "unknown"),
+                    "exception_type": event_dict.get("attributes", {}).get("exception.type", "unknown"),
+                    "exception_message": event_dict.get("attributes", {}).get("exception.message", ""),
+                    "exception_stacktrace": event_dict.get("attributes", {}).get("exception.stacktrace", ""),
+                    "filepath": metadata.get("code.filepath", "unknown"),
+                    "function": metadata.get("code.function", "unknown"),
+                    "line_number": metadata.get("code.lineno", "unknown"),
+                    "event_id": event_dict.get("id", "unknown"),
+                    "event_name": event_dict.get("name", "unknown"),
+                }
+
+                exceptions.append(exception_info)
 
         # Sort exceptions by timestamp (newest first)
         exceptions.sort(key=lambda x: x["timestamp"] if isinstance(x["timestamp"], str) else "", reverse=True)
@@ -1634,11 +1958,17 @@ async def get_error_count(
 
     try:
         # Fetch all SPAN observations since they may contain exceptions
-        response = state.langfuse_client.fetch_observations(
-            type="SPAN",
+        observation_items, _ = _list_observations(
+            state.langfuse_client,
+            limit=100,
+            page=1,
             from_start_time=from_timestamp,
             to_start_time=to_timestamp,
-            limit=100,  # Limit to 100 as per API constraints
+            obs_type="SPAN",
+            name=None,
+            user_id=None,
+            trace_id=None,
+            parent_observation_id=None,
         )
 
         # Count traces and observations with exceptions
@@ -1646,30 +1976,21 @@ async def get_error_count(
         observations_with_exceptions = 0
         total_exceptions = 0
 
-        for observation in response.data:
-            has_exception = False
-            exception_count = 0
+        for observation in (_sdk_object_to_python(obs) for obs in observation_items):
+            events = observation.get("events", []) if isinstance(observation, dict) else []
+            if not events:
+                continue
 
-            # Check if this observation has exception events
-            if hasattr(observation, "events"):
-                for event in observation.events:
-                    if not isinstance(event, dict):
-                        event_dict = event.dict() if hasattr(event, "dict") else {}
-                    else:
-                        event_dict = event
+            exception_count = sum(1 for event in events if _sdk_object_to_python(event).get("attributes", {}).get("exception.type"))
+            if exception_count == 0:
+                continue
 
-                    # Check if this is an exception event
-                    if event_dict.get("attributes", {}).get("exception.type"):
-                        has_exception = True
-                        exception_count += 1
+            observations_with_exceptions += 1
+            total_exceptions += exception_count
 
-            if has_exception:
-                observations_with_exceptions += 1
-                total_exceptions += exception_count
-
-                # Add the trace ID to our set
-                if hasattr(observation, "trace_id") and observation.trace_id:
-                    trace_ids_with_exceptions.add(observation.trace_id)
+            trace_id = observation.get("trace_id") if isinstance(observation, dict) else None
+            if trace_id:
+                trace_ids_with_exceptions.add(trace_id)
 
         result = {
             "age_minutes": age,
@@ -1832,10 +2153,9 @@ def app_factory(public_key: str, secret_key: str, host: str, cache_size: int = 1
                 secret_key=secret_key,
                 host=host,
                 debug=False,  # Disable debug mode since we're only querying
-                threads=1,  # Reduce thread count since we're not sending telemetry
+                tracing_enabled=False,  # Disable instrumentation since we're querying data only
                 flush_at=0,  # Disable automatic flushing since we're not sending data
-                flush_interval=None,  # Disable flush interval
-                enabled=True,  # Keep enabled for API queries
+                flush_interval=None,  # Disable flush interval for pull-only usage
             ),
             observation_cache=LRUCache(maxsize=cache_size),
             file_to_observations_map=LRUCache(maxsize=cache_size),
