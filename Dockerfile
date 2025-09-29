@@ -1,21 +1,41 @@
+# syntax=docker/dockerfile:1
+# Langfuse MCP Server — Docker image
+# Builds an image that runs the MCP server over stdio for use as a Goose Command-line Extension.
+
 FROM python:3.11-slim
 
-ENV PYTHONUNBUFFERED=1 \
-    LANGFUSE_PUBLIC_KEY="" \
-    LANGFUSE_SECRET_KEY="" \
-    LANGFUSE_HOST="https://cloud.langfuse.com" \
-    LANGFUSE_LOG_LEVEL="INFO" \
-    LANGFUSE_LOG_TO_CONSOLE="false"
+# Install runtime OS packages (curl for debugging optional)
+RUN apt-get update -y && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN useradd --create-home --uid 1000 appuser
-
-WORKDIR /app
-
-COPY pyproject.toml README.md /app/
-COPY langfuse_mcp /app/langfuse_mcp
-
-RUN pip install --no-cache-dir .
-
+# Create app user
+RUN useradd -ms /bin/bash appuser
 USER appuser
+WORKDIR /home/appuser/app
 
+# Copy source into image
+# (We build from local source to include latest changes.)
+# Install runtime dependencies from PyPI (stable release)
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir langfuse-mcp
+
+# Copy source only for reference (optional). Not needed for runtime.
+COPY --chown=appuser:appuser README.md LICENSE ./
+
+# Default environment — keep stdout clean for MCP stdio, log to file
+ENV LANGFUSE_LOG_LEVEL=INFO \
+    LANGFUSE_LOG_TO_CONSOLE=false \
+    PYTHONUNBUFFERED=1
+
+# Optional default dump directory inside container
+# Mount a host volume to /dumps to persist files (e.g., -v $(pwd)/dumps:/dumps)
+ENV MCP_DUMP_DIR=/dumps
+
+# Expose no ports (stdio-based MCP)
+# ENTRYPOINT runs the MCP server over stdio. Do not add --log-to-console.
 ENTRYPOINT ["python", "-m", "langfuse_mcp"]
+
+# Default CMD can set a dump dir if desired. Users can override via args.
+CMD ["--dump-dir", "/dumps"]
