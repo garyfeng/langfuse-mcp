@@ -2336,58 +2336,8 @@ def app_factory(public_key: str, secret_key: str, host: str, cache_size: int = 1
 def main():
     """Entry point for the langfuse_mcp package."""
     _load_env_file()
-
-    env_public_key = os.getenv("LANGFUSE_PUBLIC_KEY")
-    env_secret_key = os.getenv("LANGFUSE_SECRET_KEY")
-    env_host = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
-    env_log_level = os.getenv("LANGFUSE_LOG_LEVEL", "INFO")
-    env_log_console_default = os.getenv("LANGFUSE_LOG_TO_CONSOLE", "").lower() in {"1", "true", "yes"}
-
-    parser = argparse.ArgumentParser(description="Langfuse MCP Server")
-    parser.add_argument(
-        "--public-key",
-        type=str,
-        default=env_public_key,
-        required=env_public_key is None,
-        help="Langfuse public key",
-    )
-    parser.add_argument(
-        "--secret-key",
-        type=str,
-        default=env_secret_key,
-        required=env_secret_key is None,
-        help="Langfuse secret key",
-    )
-    parser.add_argument("--host", type=str, default=env_host, help="Langfuse host URL")
-    parser.add_argument("--cache-size", type=int, default=100, help="Size of LRU caches used for caching data")
-    parser.add_argument(
-        "--dump-dir",
-        type=str,
-        default="/tmp/langfuse_mcp_dumps",
-        help=(
-            "Directory to save full JSON dumps when 'output_mode' is 'full_json_file'. The directory will be created if it doesn't exist."
-        ),
-    )
-    parser.add_argument(
-        "--log-level",
-        type=str,
-        default=env_log_level,
-        choices=["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"],
-        help="Logging level (defaults to INFO).",
-    )
-    parser.add_argument(
-        "--log-to-console",
-        action="store_true",
-        default=env_log_console_default,
-        help="Also emit logs to stdout in addition to the rotating file handler.",
-    )
-    parser.add_argument(
-        "--no-log-to-console",
-        action="store_false",
-        dest="log_to_console",
-        help=argparse.SUPPRESS,
-    )
-
+    env_defaults = _read_env_defaults()
+    parser = _build_arg_parser(env_defaults)
     args = parser.parse_args()
 
     global logger
