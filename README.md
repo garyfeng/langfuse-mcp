@@ -109,6 +109,17 @@ langfuse-mcp --public-key YOUR_KEY --secret-key YOUR_SECRET --host https://cloud
 The server writes diagnostic logs to `/tmp/langfuse_mcp.log`. Remove the `--host` switch if you are targeting the default Cloud endpoint.
 Use `--log-level` (e.g., `--log-level DEBUG`) and `--log-to-console` to control verbosity during debugging.
 
+### Run with Docker
+
+```bash
+docker build -t langfuse-logs-mcp .
+docker run --rm -it \
+  -e LANGFUSE_PUBLIC_KEY=YOUR_PUBLIC_KEY \
+  -e LANGFUSE_SECRET_KEY=YOUR_SECRET_KEY \
+  -e LANGFUSE_HOST=https://cloud.langfuse.com \
+  langfuse-logs-mcp
+```
+
 ## Configuration with MCP clients
 
 ### Configure for Cursor

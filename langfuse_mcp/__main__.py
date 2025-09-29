@@ -191,6 +191,69 @@ def _load_env_file(env_path: Path | None = None) -> None:
         logger.warning(f"Unable to load environment file {env_path}: {exc}")
 
 
+def _read_env_defaults() -> dict[str, Any]:
+    """Read environment defaults used by the CLI."""
+
+    return {
+        "public_key": os.getenv("LANGFUSE_PUBLIC_KEY"),
+        "secret_key": os.getenv("LANGFUSE_SECRET_KEY"),
+        "host": os.getenv("LANGFUSE_HOST") or "https://cloud.langfuse.com",
+        "log_level": os.getenv("LANGFUSE_LOG_LEVEL", "INFO"),
+        "log_to_console": os.getenv("LANGFUSE_LOG_TO_CONSOLE", "").lower() in {"1", "true", "yes"},
+    }
+
+
+def _build_arg_parser(env_defaults: dict[str, Any]) -> argparse.ArgumentParser:
+    """Construct the CLI argument parser using provided defaults."""
+
+    parser = argparse.ArgumentParser(description="Langfuse MCP Server")
+    parser.add_argument(
+        "--public-key",
+        type=str,
+        default=env_defaults["public_key"],
+        required=env_defaults["public_key"] is None,
+        help="Langfuse public key",
+    )
+    parser.add_argument(
+        "--secret-key",
+        type=str,
+        default=env_defaults["secret_key"],
+        required=env_defaults["secret_key"] is None,
+        help="Langfuse secret key",
+    )
+    parser.add_argument("--host", type=str, default=env_defaults["host"], help="Langfuse host URL")
+    parser.add_argument("--cache-size", type=int, default=100, help="Size of LRU caches used for caching data")
+    parser.add_argument(
+        "--dump-dir",
+        type=str,
+        default="/tmp/langfuse_mcp_dumps",
+        help=(
+            "Directory to save full JSON dumps when 'output_mode' is 'full_json_file'. The directory will be created if it doesn't exist."
+        ),
+    )
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default=env_defaults["log_level"],
+        choices=["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"],
+        help="Logging level (defaults to INFO).",
+    )
+    parser.add_argument(
+        "--log-to-console",
+        action="store_true",
+        default=env_defaults["log_to_console"],
+        help="Also emit logs to stdout in addition to the rotating file handler.",
+    )
+    parser.add_argument(
+        "--no-log-to-console",
+        action="store_false",
+        dest="log_to_console",
+        help=argparse.SUPPRESS,
+    )
+
+    return parser
+
+
 def _sdk_object_to_python(obj: Any) -> Any:
     """Convert Langfuse SDK models (pydantic/dataclasses) into plain Python types."""
 
@@ -1007,6 +1070,8 @@ async def fetch_traces(
         - For full data but viewable in responses: use include_observations=True with output_mode="compact"
         - For complete data dumps: use include_observations=True with output_mode="full_json_file"
     """
+    age = validate_age(age)
+
     state = cast(MCPState, ctx.request_context.lifespan_context)
 
     age = validate_age(age)
