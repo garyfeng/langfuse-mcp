@@ -85,6 +85,16 @@ You'll need your Langfuse credentials:
 - Secret key
 - Host URL (usually https://cloud.langfuse.com or your self-hosted URL)
 
+You can store these in a local `.env` file instead of passing CLI flags each time:
+
+```
+LANGFUSE_PUBLIC_KEY=your_public_key
+LANGFUSE_SECRET_KEY=your_secret_key
+LANGFUSE_HOST=https://cloud.langfuse.com
+```
+
+When present, the MCP server reads these values automatically. CLI arguments still override the environment if provided.
+
 ## Running the Server
 
 Run the server using `uvx` or the project virtual environment:
