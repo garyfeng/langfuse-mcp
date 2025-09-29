@@ -363,15 +363,16 @@ def _get_observation(langfuse_client: Any, observation_id: str) -> Any:
 
 
 def _get_trace(langfuse_client: Any, trace_id: str, include_observations: bool) -> Any:
-    """Fetch a single trace handling SDK version differences."""
+    """Fetch a single trace handling SDK version differences.
+
+    Note: Some Langfuse SDK versions do not support a `fields` selector on `get()`. We avoid
+    passing `fields` here and rely on embedding observations separately when requested.
+    """
 
     if not hasattr(langfuse_client, "api") or not hasattr(langfuse_client.api, "trace"):
         raise RuntimeError("Unsupported Langfuse client: no trace getter available")
 
-    if include_observations:
-        return langfuse_client.api.trace.get(trace_id=trace_id, fields="core,io,observations")
-
-    return langfuse_client.api.trace.get(trace_id=trace_id, fields="core,io")
+    return langfuse_client.api.trace.get(trace_id=trace_id)
 
 
 def _list_sessions(

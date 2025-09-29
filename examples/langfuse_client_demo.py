@@ -75,7 +75,7 @@ async def run_mcp_tools(public_key: str, secret_key: str, host: str):
             # Get error count for last hour
             logger.info("\nGetting error count for last hour...")
             try:
-                result = await session.call_tool("get_error_count", {"age": 60})
+                result = await session.call_tool("get_error_count", {"age": 1440})
                 data, metadata = parse_envelope(result)
                 logger.info("Error count results:")
                 if isinstance(data, dict):
@@ -100,20 +100,20 @@ async def run_mcp_tools(public_key: str, secret_key: str, host: str):
                 data, metadata = parse_envelope(result)
                 traces_list = data if isinstance(data, list) else ([] if data in (None, "") else [data])
 
-                    if not traces_list:
-                        logger.info("No traces found in the past 24 hours")
-                    else:
-                        logger.info(f"Found {len(traces_list)} traces:")
-                        for i, trace in enumerate(traces_list[:5], 1):
-                            logger.info(f"\nTrace {i}:")
-                            logger.info(f"  ID: {trace.get('id', 'unknown')}")
-                            logger.info(f"  Name: {trace.get('name', 'unnamed')}")
-                            logger.info(f"  Time: {trace.get('timestamp', 'unknown')}")
-                            logger.info(f"  User ID: {trace.get('user_id', 'none')}")
+                if not traces_list:
+                    logger.info("No traces found in the past 24 hours")
+                else:
+                    logger.info(f"Found {len(traces_list)} traces:")
+                    for i, trace in enumerate(traces_list[:5], 1):
+                        logger.info(f"\nTrace {i}:")
+                        logger.info(f"  ID: {trace.get('id', 'unknown')}")
+                        logger.info(f"  Name: {trace.get('name', 'unnamed')}")
+                        logger.info(f"  Time: {trace.get('timestamp', 'unknown')}")
+                        logger.info(f"  User ID: {trace.get('user_id', 'none')}")
 
-                            observations = trace.get("observations", [])
-                            if observations:
-                                logger.info(f"  Observations: {len(observations)}")
+                        observations = trace.get("observations", [])
+                        if observations:
+                            logger.info(f"  Observations: {len(observations)}")
                 logger.info(f"Metadata: {metadata}")
             except Exception as e:
                 logger.error(f"Error retrieving traces: {e}")

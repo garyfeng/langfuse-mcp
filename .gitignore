@@ -180,3 +180,6 @@ data/
 .cursor/mcp.json
 
 run_mcp.py
+
+*.out
+.vscode
