@@ -113,11 +113,15 @@ Use `--log-level` (e.g., `--log-level DEBUG`) and `--log-to-console` to control 
 
 ```bash
 docker build -t langfuse-logs-mcp .
-docker run --rm -it \
+docker run --rm -i \
   -e LANGFUSE_PUBLIC_KEY=YOUR_PUBLIC_KEY \
   -e LANGFUSE_SECRET_KEY=YOUR_SECRET_KEY \
   -e LANGFUSE_HOST=https://cloud.langfuse.com \
+  -e LANGFUSE_MCP_LOG_FILE=/logs/langfuse_mcp.log \
+  -v "$(pwd)/logs:/logs" \
   langfuse-logs-mcp
+
+> **Why no `-t`?** Allocating a pseudo-TTY can interfere with MCP stdio clients. Use `-i` only so the server communicates over plain stdin/stdout.
 ```
 
 ## Configuration with MCP clients
