@@ -33,7 +33,8 @@ except PackageNotFoundError:
     __version__ = "0.1.1.dev0"
 
 # Set up logging with rotation
-LOG_FILE = "/tmp/langfuse_mcp.log"
+LOG_FILE = Path(os.getenv("LANGFUSE_MCP_LOG_FILE", "/tmp/langfuse_mcp.log")).expanduser()
+LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
@@ -2335,18 +2336,22 @@ def app_factory(public_key: str, secret_key: str, host: str, cache_size: int = 1
 
 def main():
     """Entry point for the langfuse_mcp package."""
-    _load_env_file()
-    env_defaults = _read_env_defaults()
-    logger.debug("Environment defaults loaded: %s", {k: ('***' if 'key' in k else v) for k, v in env_defaults.items()})
-    parser = _build_arg_parser(env_defaults)
-    args = parser.parse_args()
 
     global logger
-    logger = configure_logging(args.log_level, args.log_to_console)
+
+    # logger = configure_logging(args.log_level, args.log_to_console)
+    logger = configure_logging("DEBUG", False)
     logger.info("=" * 80)
     logger.info(f"Starting Langfuse MCP v{__version__}")
     logger.info(f"Python executable: {sys.executable}")
     logger.info("=" * 80)
+    logger.info("Environment defaults loaded: %s", {k: ('***' if 'key' in k else v) for k, v in env_defaults.items()})
+    
+    _load_env_file()
+    env_defaults = _read_env_defaults()
+    parser = _build_arg_parser(env_defaults)
+    args = parser.parse_args()
+
 
     # Create dump directory if it doesn't exist
     if args.dump_dir:
