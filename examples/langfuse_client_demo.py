@@ -76,12 +76,12 @@ async def run_mcp_tools(public_key: str, secret_key: str, host: str):
             logger.info("\nGetting error count for last hour...")
             try:
                 result = await session.call_tool("get_error_count", {"age": 60})
-                if hasattr(result, "content") and result.content:
-                    error_count_text = result.content[0].text if result.content[0].text else "{}"
-                    error_count_data = json.loads(error_count_text)
-                    logger.info("Error count results:")
-                    for key, value in error_count_data.items():
+                data, metadata = parse_envelope(result)
+                logger.info("Error count results:")
+                if isinstance(data, dict):
+                    for key, value in data.items():
                         logger.info(f"  {key}: {value}")
+                logger.info(f"Metadata: {metadata}")
             except Exception as e:
                 logger.error(f"Error getting error count: {e}")
 
@@ -97,12 +97,8 @@ async def run_mcp_tools(public_key: str, secret_key: str, host: str):
                     },
                 )
 
-                if hasattr(result, "content") and result.content:
-                    text_content = result.content[0].text if result.content[0].text else "[]"
-                    traces_data = json.loads(text_content)
-
-                    # Handle both single trace and multiple traces
-                    traces_list = traces_data if isinstance(traces_data, list) else [traces_data]
+                data, metadata = parse_envelope(result)
+                traces_list = data if isinstance(data, list) else ([] if data in (None, "") else [data])
 
                     if not traces_list:
                         logger.info("No traces found in the past 24 hours")
@@ -118,6 +114,7 @@ async def run_mcp_tools(public_key: str, secret_key: str, host: str):
                             observations = trace.get("observations", [])
                             if observations:
                                 logger.info(f"  Observations: {len(observations)}")
+                logger.info(f"Metadata: {metadata}")
             except Exception as e:
                 logger.error(f"Error retrieving traces: {e}")
 
@@ -125,21 +122,40 @@ async def run_mcp_tools(public_key: str, secret_key: str, host: str):
             logger.info("\nFinding exceptions from the past 24 hours...")
             try:
                 result = await session.call_tool("find_exceptions", {"age": 24 * 60, "group_by": "file"})
+                data, metadata = parse_envelope(result)
 
-                if hasattr(result, "content") and result.content:
-                    exceptions_text = result.content[0].text if result.content[0].text else "[]"
-                    exceptions_data = json.loads(exceptions_text)
-
-                    if not exceptions_data:
-                        logger.info("No exceptions found")
-                    else:
-                        logger.info(f"Found {len(exceptions_data)} exception groups:")
-                        for i, exception in enumerate(exceptions_data[:5], 1):
+                if not data:
+                    logger.info("No exceptions found")
+                else:
+                    logger.info(f"Found {len(data)} exception groups:")
+                    for i, exception in enumerate(data[:5], 1):
+                        if isinstance(exception, dict):
                             logger.info(f"  Group {i}: {exception.get('group')} - Count: {exception.get('count')}")
+                        else:
+                            logger.info(f"  Group {i}: {exception}")
+                logger.info(f"Metadata: {metadata}")
             except Exception as e:
                 logger.error(f"Error finding exceptions: {e}")
 
             logger.info("\nMCP runner completed successfully!")
+
+
+def parse_envelope(result):
+    """Parse tool response content into data and metadata."""
+
+    if not hasattr(result, "content") or not result.content:
+        return None, None
+
+    raw_text = result.content[0].text or ""
+    try:
+        payload = json.loads(raw_text)
+    except json.JSONDecodeError:
+        return raw_text, None
+
+    if isinstance(payload, dict) and "data" in payload:
+        return payload.get("data"), payload.get("metadata")
+
+    return payload, None
 
 
 def main():

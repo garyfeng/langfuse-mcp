@@ -2,7 +2,18 @@
 
 import sys
 
+import logging
 import pytest
+
+
+def test_configure_logging_console():
+    """configure_logging should honor log level and console flag."""
+    from langfuse_mcp.__main__ import configure_logging
+
+    configure_logging("DEBUG", True)
+    root_handlers = logging.getLogger().handlers
+    assert logging.getLogger().level == logging.DEBUG
+    assert any(isinstance(handler, logging.StreamHandler) for handler in root_handlers)
 
 
 def test_package_importable():

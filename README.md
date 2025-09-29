@@ -107,6 +107,7 @@ langfuse-mcp --public-key YOUR_KEY --secret-key YOUR_SECRET --host https://cloud
 ```
 
 The server writes diagnostic logs to `/tmp/langfuse_mcp.log`. Remove the `--host` switch if you are targeting the default Cloud endpoint.
+Use `--log-level` (e.g., `--log-level DEBUG`) and `--log-to-console` to control verbosity during debugging.
 
 ## Configuration with MCP clients
 
@@ -189,11 +190,6 @@ To run the demo client:
 uv run examples/langfuse_client_demo.py --public-key YOUR_PUBLIC_KEY --secret-key YOUR_SECRET_KEY
 ```
 
-Or use the convenience wrapper:
-
-```bash
-uv run run_mcp.py
-```
 
 ## Version Management
 
