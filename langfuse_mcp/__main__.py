@@ -18,6 +18,7 @@ from enum import Enum
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, version
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from typing import Annotated, Any, Literal, cast
 
 from cachetools import LRUCache
@@ -136,6 +137,32 @@ OUTPUT_MODE_LITERAL = Literal["compact", "full_json_string", "full_json_file"]
 
 # Define a custom Dict type for our standardized response format
 ResponseDict = dict[str, Any]
+
+
+def _load_env_file(env_path: Path | None = None) -> None:
+    """Load environment variables from a `.env` file if present."""
+
+    if env_path is None:
+        env_path = Path(__file__).resolve().parent.parent / ".env"
+
+    if not env_path.exists() or not env_path.is_file():
+        return
+
+    try:
+        with env_path.open("r", encoding="utf-8") as env_file:
+            for line in env_file:
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                if "=" not in stripped:
+                    continue
+                key, value = stripped.split("=", 1)
+                key = key.strip()
+                value = value.strip()
+                if key and key not in os.environ:
+                    os.environ[key] = value
+    except OSError as exc:
+        logger.warning(f"Unable to load environment file {env_path}: {exc}")
 
 
 def _sdk_object_to_python(obj: Any) -> Any:
@@ -2180,10 +2207,28 @@ def main():
     logger.info(f"Python executable: {sys.executable}")
     logger.info("=" * 80)
 
+    _load_env_file()
+
+    env_public_key = os.getenv("LANGFUSE_PUBLIC_KEY")
+    env_secret_key = os.getenv("LANGFUSE_SECRET_KEY")
+    env_host = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
+
     parser = argparse.ArgumentParser(description="Langfuse MCP Server")
-    parser.add_argument("--public-key", type=str, required=True, help="Langfuse public key")
-    parser.add_argument("--secret-key", type=str, required=True, help="Langfuse secret key")
-    parser.add_argument("--host", type=str, default="https://cloud.langfuse.com", help="Langfuse host URL")
+    parser.add_argument(
+        "--public-key",
+        type=str,
+        default=env_public_key,
+        required=env_public_key is None,
+        help="Langfuse public key",
+    )
+    parser.add_argument(
+        "--secret-key",
+        type=str,
+        default=env_secret_key,
+        required=env_secret_key is None,
+        help="Langfuse secret key",
+    )
+    parser.add_argument("--host", type=str, default=env_host, help="Langfuse host URL")
     parser.add_argument("--cache-size", type=int, default=100, help="Size of LRU caches used for caching data")
     parser.add_argument(
         "--dump-dir",
