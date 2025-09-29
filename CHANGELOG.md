@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Migrated Langfuse MCP server to use the Langfuse 3.x Python SDK, replacing deprecated v2 fetch_* helpers with the `langfuse.api.*` resource clients.
 - Updated test doubles and unit tests to model the v3 API surface and ensure compatibility going forward.
+- MCP CLI now reads Langfuse credentials (`public_key`, `secret_key`, `host`) from a `.env` file or environment variables by default, keeping CLI flags optional.
 
 ### Removed
 - Dropped the temporary Langfuse v2 pin in favour of depending on `langfuse>=3.0.0`.
