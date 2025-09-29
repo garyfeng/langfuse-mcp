@@ -56,10 +56,7 @@ def test_fetch_trace(state):
     result = asyncio.run(fetch_trace(ctx, trace_id="trace_1", include_observations=True, output_mode="compact"))
     assert result["data"]["id"] == "trace_1"
     assert result["data"]["observations"][0]["id"] == "obs_1"
-    assert state.langfuse_client.api.trace.last_get_kwargs == {
-        "trace_id": "trace_1",
-        "fields": "core,io,observations",
-    }
+    assert state.langfuse_client.api.trace.last_get_kwargs == {"trace_id": "trace_1"}
 
 
 def test_fetch_observations(state):
