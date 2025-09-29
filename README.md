@@ -200,7 +200,7 @@ For a detailed history of changes, please see the [CHANGELOG.md](CHANGELOG.md) f
 
 ## Langfuse 3.x migration notes
 
-- The MCP server now uses the Langfuse Python SDK v3 resource clients (`langfuse.traces.list`, `langfuse.observations.list`, etc.).
+- The MCP server now uses the Langfuse Python SDK v3 resource clients (`langfuse.api.trace.list`, `langfuse.api.observations.get_many`, etc.).
 - Unit tests use a v3-style fake client that fails if legacy `fetch_*` helpers are invoked, helping catch regressions early.
 - Tool responses now include pagination metadata when the Langfuse API returns cursors, while retaining the existing MCP interface.
 - Diagnostic logs continue to stream to `/tmp/langfuse_mcp.log`; this is useful when verifying the upgraded integration against a live Langfuse deployment.

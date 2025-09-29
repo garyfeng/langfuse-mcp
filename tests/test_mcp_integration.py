@@ -2,6 +2,7 @@
 
 import json
 import logging
+import sys
 
 import pytest
 
@@ -21,9 +22,8 @@ logger = logging.getLogger("langfuse-mcp-test")
 async def run_get_schema_test():
     """Run the get_data_schema tool with dummy credentials."""
     server_params = StdioServerParameters(
-        command="uv",
+        command=sys.executable,
         args=[
-            "run",
             "-m",
             "langfuse_mcp",
             "--public-key",

@@ -1,4 +1,4 @@
-"""Fake classes for testing langfuse-mcp against Langfuse v3 semantics."""
+"""Fake classes for testing langfuse-mcp against the Langfuse v3 API surface."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import Any, Optional
 
 @dataclass
 class FakeTrace:
-    """Simple trace model inspired by Langfuse v3 responses."""
+    """Simple trace record returned by the fake SDK."""
 
     id: str
     name: str
@@ -18,12 +18,12 @@ class FakeTrace:
     created_at: datetime
     metadata: dict[str, Any] = field(default_factory=dict)
     tags: list[str] = field(default_factory=list)
-    observations: list["FakeObservation"] = field(default_factory=list)
+    observations: list[str] = field(default_factory=list)
 
 
 @dataclass
 class FakeObservation:
-    """Observation model with nested structure similar to Langfuse v3."""
+    """Observation representation compatible with _sdk_object_to_python."""
 
     id: str
     type: str
@@ -32,12 +32,12 @@ class FakeObservation:
     start_time: datetime
     end_time: datetime
     metadata: dict[str, Any] = field(default_factory=dict)
-    level: str | None = None
+    events: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
 class FakeSession:
-    """Session model mimicking the Langfuse v3 SDK."""
+    """Session object returned by the fake sessions API."""
 
     id: str
     user_id: str
@@ -47,92 +47,100 @@ class FakeSession:
 
 @dataclass
 class FakePaginatedResponse:
-    """Generic paginated container returned by resource list methods."""
+    """Minimal paginated response with data/meta attributes."""
 
-    items: list[Any]
-    next_page: str | None = None
-    total: int | None = None
+    data: list[Any]
+    meta: dict[str, Any]
 
 
-class FakeTracesResource:
-    """Resource facade that tracks calls to trace listing/getting."""
+class _TraceAPI:
+    """Fake implementation of the v3 trace resource client."""
 
     def __init__(self, store: "FakeDataStore") -> None:
         self._store = store
         self.last_list_kwargs: dict[str, Any] | None = None
         self.last_get_kwargs: dict[str, Any] | None = None
 
-    def list(
-        self,
-        *,
-        limit: int | None = None,
-        order: str | None = None,
-        include_observations: bool = False,
-        **filters: Any,
-    ) -> FakePaginatedResponse:
-        """Return traces matching filters; mirrors Langfuse v3 semantics."""
-
-        normalized_filters = filters.get("filters", filters)
-        self.last_list_kwargs = {
-            "limit": limit,
-            "order": order,
-            "include_observations": include_observations,
-            "filters": normalized_filters,
-        }
+    def list(self, **kwargs: Any) -> FakePaginatedResponse:
+        self.last_list_kwargs = kwargs
         traces = list(self._store.traces.values())
-        if include_observations:
+
+        # Expand observation ids if requested via fields
+        fields = kwargs.get("fields") or ""
+        if "observations" in fields:
+            enriched = []
             for trace in traces:
-                trace.observations = [self._store.observations[o_id] for o_id in trace.metadata.get("observation_ids", [])]
-        return FakePaginatedResponse(items=traces, next_page=None, total=len(traces))
+                obs = [self._store.observations[o_id] for o_id in trace.observations]
+                enriched.append({**trace.__dict__, "observations": [ob.__dict__ for ob in obs]})
+            data: list[Any] = enriched
+        else:
+            data = [trace.__dict__ for trace in traces]
 
-    def get(self, trace_id: str, *, include_observations: bool = False) -> FakeTrace | None:
-        """Return a single trace model."""
+        return FakePaginatedResponse(data=data, meta={"next_page": None, "total": len(data)})
 
-        self.last_get_kwargs = {"trace_id": trace_id, "include_observations": include_observations}
+    def get(self, trace_id: str, **kwargs: Any) -> dict[str, Any]:
+        self.last_get_kwargs = {"trace_id": trace_id, **kwargs}
         trace = self._store.traces.get(trace_id)
-        if trace and include_observations:
-            trace.observations = [self._store.observations[o_id] for o_id in trace.metadata.get("observation_ids", [])]
-        return trace
+        if not trace:
+            return {}
+
+        include_observations = "fields" in kwargs and kwargs["fields"]
+        if include_observations and "observations" in kwargs["fields"]:
+            obs = [self._store.observations[o_id] for o_id in trace.observations]
+            return {**trace.__dict__, "observations": [ob.__dict__ for ob in obs]}
+        return trace.__dict__
 
 
-class FakeObservationsResource:
-    """Resource for observations supporting list/get operations."""
+class _ObservationsAPI:
+    """Fake implementation of observations resource client."""
 
     def __init__(self, store: "FakeDataStore") -> None:
         self._store = store
-        self.last_list_kwargs: dict[str, Any] | None = None
+        self.last_get_many_kwargs: dict[str, Any] | None = None
         self.last_get_kwargs: dict[str, Any] | None = None
 
-    def list(self, *, limit: int | None = None, **filters: Any) -> FakePaginatedResponse:
-        self.last_list_kwargs = {"limit": limit, "filters": filters}
+    def get_many(self, **kwargs: Any) -> FakePaginatedResponse:
+        self.last_get_many_kwargs = kwargs
         observations = list(self._store.observations.values())
-        return FakePaginatedResponse(items=observations, next_page=None, total=len(observations))
+        data = [obs.__dict__ for obs in observations]
+        return FakePaginatedResponse(data=data, meta={"next_page": None, "total": len(data)})
 
-    def get(self, observation_id: str) -> FakeObservation | None:
-        self.last_get_kwargs = {"observation_id": observation_id}
-        return self._store.observations.get(observation_id)
+    def get(self, observation_id: str, **kwargs: Any) -> dict[str, Any]:
+        self.last_get_kwargs = {"observation_id": observation_id, **kwargs}
+        obs = self._store.observations.get(observation_id)
+        return obs.__dict__ if obs else {}
 
 
-class FakeSessionsResource:
-    """Resource for sessions supporting list/get operations."""
+class _SessionsAPI:
+    """Fake implementation of sessions resource client."""
 
     def __init__(self, store: "FakeDataStore") -> None:
         self._store = store
         self.last_list_kwargs: dict[str, Any] | None = None
         self.last_get_kwargs: dict[str, Any] | None = None
 
-    def list(self, *, limit: int | None = None, **filters: Any) -> FakePaginatedResponse:
-        self.last_list_kwargs = {"limit": limit, "filters": filters}
-        sessions = list(self._store.sessions.values())
-        return FakePaginatedResponse(items=sessions, next_page=None, total=len(sessions))
+    def list(self, **kwargs: Any) -> FakePaginatedResponse:
+        self.last_list_kwargs = kwargs
+        sessions = [session.__dict__ for session in self._store.sessions.values()]
+        return FakePaginatedResponse(data=sessions, meta={"next_page": None, "total": len(sessions)})
 
-    def get(self, session_id: str) -> FakeSession | None:
-        self.last_get_kwargs = {"session_id": session_id}
-        return self._store.sessions.get(session_id)
+    def get(self, session_id: str, **kwargs: Any) -> dict[str, Any]:
+        self.last_get_kwargs = {"session_id": session_id, **kwargs}
+        session = self._store.sessions.get(session_id)
+        return session.__dict__ if session else {}
+
+
+class FakeAPI:
+    """Aggregate object exposed via FakeLangfuse.api."""
+
+    def __init__(self, store: "FakeDataStore") -> None:
+        self.trace = _TraceAPI(store)
+        self.observations = _ObservationsAPI(store)
+        self.sessions = _SessionsAPI(store)
 
 
 class FakeDataStore:
-    """In-memory backing store shared across resource facades."""
+    """In-memory backing store shared across fake API resources."""
 
     def __init__(self) -> None:
         now = datetime(2023, 1, 1, tzinfo=timezone.utc)
@@ -145,6 +153,7 @@ class FakeDataStore:
                 start_time=now,
                 end_time=now,
                 metadata={"code.filepath": "app.py"},
+                events=[{"attributes": {"exception.type": "ValueError"}}],
             )
         }
         self.traces: dict[str, FakeTrace] = {
@@ -154,8 +163,9 @@ class FakeDataStore:
                 user_id="user_1",
                 session_id="session_1",
                 created_at=now,
-                metadata={"observation_ids": ["obs_1"]},
+                metadata={},
                 tags=["unit-test"],
+                observations=["obs_1"],
             )
         }
         self.sessions: dict[str, FakeSession] = {
@@ -169,41 +179,21 @@ class FakeDataStore:
 
 
 class FakeLangfuse:
-    """Langfuse client double exposing v3-style resources only."""
+    """Langfuse client double exposing the real v3 API surface."""
 
     def __init__(self) -> None:
         self._store = FakeDataStore()
-        self.traces = FakeTracesResource(self._store)
-        self.observations = FakeObservationsResource(self._store)
-        self.sessions = FakeSessionsResource(self._store)
+        self.api = FakeAPI(self._store)
         self.closed = False
 
-    # v2 helpers are intentionally unsupported to catch accidental use during migration
-    def fetch_traces(self, *args: Any, **kwargs: Any) -> None:  # pragma: no cover - defensive
-        raise AssertionError("Langfuse v3 SDK does not expose fetch_traces")
-
-    def fetch_trace(self, *args: Any, **kwargs: Any) -> None:  # pragma: no cover - defensive
-        raise AssertionError("Langfuse v3 SDK does not expose fetch_trace")
-
-    def fetch_observations(self, *args: Any, **kwargs: Any) -> None:  # pragma: no cover - defensive
-        raise AssertionError("Langfuse v3 SDK does not expose fetch_observations")
-
-    def fetch_observation(self, *args: Any, **kwargs: Any) -> None:  # pragma: no cover - defensive
-        raise AssertionError("Langfuse v3 SDK does not expose fetch_observation")
-
-    def fetch_sessions(self, *args: Any, **kwargs: Any) -> None:  # pragma: no cover - defensive
-        raise AssertionError("Langfuse v3 SDK does not expose fetch_sessions")
-
     def close(self) -> None:
-        """mimic the shutdown hook exposed in Langfuse v3."""
-
         self.closed = True
 
-    # For compatibility with cleanup logic that still calls flush/shutdown, keep no-op stubs
-    def flush(self) -> None:  # pragma: no cover - backwards compatibility during migration
+    # Backwards compatibility for cleanup logic.
+    def flush(self) -> None:  # pragma: no cover - compatibility shim
         return None
 
-    def shutdown(self) -> None:  # pragma: no cover - backwards compatibility during migration
+    def shutdown(self) -> None:  # pragma: no cover - compatibility shim
         self.close()
 
 

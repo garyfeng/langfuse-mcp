@@ -198,6 +198,14 @@ def _extract_items_from_response(response: Any) -> tuple[list[Any], dict[str, An
     return [response], {}
 
 
+def _metadata_matches(item: Any, metadata_filter: dict[str, Any]) -> bool:
+    """Determine whether the provided item matches the requested metadata filter."""
+
+    item_dict = _sdk_object_to_python(item)
+    metadata = item_dict.get("metadata") or {}
+    return all(metadata.get(key) == value for key, value in metadata_filter.items())
+
+
 def _list_traces(
     langfuse_client: Any,
     *,
@@ -213,57 +221,37 @@ def _list_traces(
 ) -> tuple[list[Any], dict[str, Any]]:
     """Fetch traces via the Langfuse SDK handling both v2 and v3 signatures."""
 
-    cleaned_filters: dict[str, Any] = {}
-    if name:
-        cleaned_filters["name"] = name
-    if user_id:
-        cleaned_filters["user_id"] = user_id
-    if session_id:
-        cleaned_filters["session_id"] = session_id
-    if tags:
-        cleaned_filters["tags"] = tags
+    if not hasattr(langfuse_client, "api") or not hasattr(langfuse_client.api, "trace"):
+        raise RuntimeError("Unsupported Langfuse client: no trace listing method available")
+
+    list_kwargs: dict[str, Any] = {
+        "limit": limit or None,
+        "page": page or None,
+        "user_id": user_id,
+        "name": name,
+        "session_id": session_id,
+        "from_timestamp": from_timestamp,
+        "tags": tags,
+    }
+
+    # Include observation payloads via the fields selector when requested.
+    if include_observations and metadata:
+        list_kwargs["fields"] = "core,io,observations"
+    elif include_observations:
+        list_kwargs["fields"] = "core,observations"
+    elif metadata:
+        list_kwargs["fields"] = "core,io"
+
+    list_kwargs = {k: v for k, v in list_kwargs.items() if v is not None}
+
+    response = langfuse_client.api.trace.list(**list_kwargs)
+    items, pagination = _extract_items_from_response(response)
+
     if metadata:
-        cleaned_filters["metadata"] = metadata
+        items = [item for item in items if _metadata_matches(item, metadata)]
+        pagination = {**pagination, "total": len(items)}
 
-    created_after = from_timestamp.isoformat()
-
-    if hasattr(langfuse_client, "traces") and hasattr(langfuse_client.traces, "list"):
-        list_kwargs: dict[str, Any] = {
-            "limit": limit,
-            "include_observations": include_observations,
-        }
-        # Support cursor-based pagination while keeping page compatibility for the old interface
-        if page > 1:
-            list_kwargs["page"] = page
-
-        # Try the "filters" style signature first, fall back to expanded kwargs if necessary
-        if cleaned_filters:
-            list_kwargs["filters"] = {**cleaned_filters, "created_after": created_after}
-        else:
-            list_kwargs["filters"] = {"created_after": created_after}
-
-        try:
-            response = langfuse_client.traces.list(**list_kwargs)
-        except TypeError:
-            # Some SDK builds expose named arguments instead of a filters dict
-            list_kwargs.pop("filters", None)
-            list_kwargs.update(cleaned_filters)
-            list_kwargs["created_after"] = created_after
-            response = langfuse_client.traces.list(**list_kwargs)
-
-        return _extract_items_from_response(response)
-
-    # v2 fallback for completeness (should be removed after migration)
-    response = langfuse_client.fetch_traces(
-        name=name,
-        user_id=user_id,
-        session_id=session_id,
-        from_timestamp=from_timestamp,
-        page=page,
-        limit=limit,
-        tags=tags,
-    )
-    return _extract_items_from_response(response)
+    return items, pagination
 
 
 def _list_observations(
@@ -278,77 +266,60 @@ def _list_observations(
     user_id: str | None,
     trace_id: str | None,
     parent_observation_id: str | None,
+    metadata: dict[str, Any] | None,
 ) -> tuple[list[Any], dict[str, Any]]:
     """Fetch observations via the Langfuse SDK handling v2/v3 differences."""
 
-    filters: dict[str, Any] = {
-        "created_after": from_start_time.isoformat(),
+    if not hasattr(langfuse_client, "api") or not hasattr(langfuse_client.api, "observations"):
+        raise RuntimeError("Unsupported Langfuse client: no observation listing method available")
+
+    list_kwargs: dict[str, Any] = {
+        "limit": limit or None,
+        "page": page or None,
+        "name": name,
+        "user_id": user_id,
+        "type": obs_type,
+        "trace_id": trace_id,
+        "parent_observation_id": parent_observation_id,
+        "from_start_time": from_start_time,
+        "to_start_time": to_start_time,
     }
-    if to_start_time:
-        filters["created_before"] = to_start_time.isoformat()
-    if obs_type:
-        filters["type"] = obs_type
-    if name:
-        filters["name"] = name
-    if user_id:
-        filters["user_id"] = user_id
-    if trace_id:
-        filters["trace_id"] = trace_id
-    if parent_observation_id:
-        filters["parent_observation_id"] = parent_observation_id
+    list_kwargs = {k: v for k, v in list_kwargs.items() if v is not None}
 
-    if hasattr(langfuse_client, "observations") and hasattr(langfuse_client.observations, "list"):
-        list_kwargs: dict[str, Any] = {"limit": limit, "page": page}
+    response = langfuse_client.api.observations.get_many(**list_kwargs)
+    items, pagination = _extract_items_from_response(response)
 
-        if filters:
-            list_kwargs["filters"] = filters
+    if metadata:
+        items = [item for item in items if _metadata_matches(item, metadata)]
+        pagination = {**pagination, "total": len(items)}
 
-        try:
-            response = langfuse_client.observations.list(**list_kwargs)
-        except TypeError:
-            list_kwargs.pop("filters", None)
-            list_kwargs.update(filters)
-            response = langfuse_client.observations.list(**list_kwargs)
-
-        return _extract_items_from_response(response)
-
-    response = langfuse_client.fetch_observations(
-        type=obs_type,
-        name=name,
-        user_id=user_id,
-        trace_id=trace_id,
-        parent_observation_id=parent_observation_id,
-        from_start_time=from_start_time,
-        to_start_time=to_start_time,
-        page=page,
-        limit=limit,
-    )
-    return _extract_items_from_response(response)
+    return items, pagination
 
 
 def _get_observation(langfuse_client: Any, observation_id: str) -> Any:
     """Fetch a single observation using either the v3 or v2 SDK surface."""
 
-    if hasattr(langfuse_client, "observations") and hasattr(langfuse_client.observations, "get"):
-        return langfuse_client.observations.get(observation_id=observation_id)
+    if hasattr(langfuse_client, "api") and hasattr(langfuse_client.api, "observations"):
+        return langfuse_client.api.observations.get(observation_id=observation_id)
 
-    response = langfuse_client.fetch_observation(observation_id)
-    return getattr(response, "data", response)
+    if hasattr(langfuse_client, "fetch_observation"):
+        response = langfuse_client.fetch_observation(observation_id)
+        return getattr(response, "data", response)
+
+    raise RuntimeError("Unsupported Langfuse client: no observation getter available")
 
 
 def _get_trace(langfuse_client: Any, trace_id: str, include_observations: bool) -> Any:
     """Fetch a single trace handling SDK version differences."""
 
-    if hasattr(langfuse_client, "traces") and hasattr(langfuse_client.traces, "get"):
-        get_kwargs = {"trace_id": trace_id, "include_observations": include_observations}
-        try:
-            return langfuse_client.traces.get(**get_kwargs)
-        except TypeError:
-            # Some SDK versions expect positional trace_id
-            return langfuse_client.traces.get(trace_id, include_observations=include_observations)
+    if hasattr(langfuse_client, "api") and hasattr(langfuse_client.api, "trace"):
+        return langfuse_client.api.trace.get(trace_id=trace_id)
 
-    response = langfuse_client.fetch_trace(trace_id)
-    return getattr(response, "data", response)
+    if hasattr(langfuse_client, "fetch_trace"):
+        response = langfuse_client.fetch_trace(trace_id)
+        return getattr(response, "data", response)
+
+    raise RuntimeError("Unsupported Langfuse client: no trace getter available")
 
 
 def _list_sessions(
@@ -362,21 +333,22 @@ def _list_sessions(
 
     filters = {"created_after": from_timestamp.isoformat()}
 
-    if hasattr(langfuse_client, "sessions") and hasattr(langfuse_client.sessions, "list"):
-        list_kwargs: dict[str, Any] = {"limit": limit, "page": page}
-        list_kwargs["filters"] = filters
+    if hasattr(langfuse_client, "api") and hasattr(langfuse_client.api, "sessions"):
+        list_kwargs: dict[str, Any] = {
+            "limit": limit or None,
+            "page": page or None,
+            "from_timestamp": from_timestamp,
+        }
+        list_kwargs = {k: v for k, v in list_kwargs.items() if v is not None}
 
-        try:
-            response = langfuse_client.sessions.list(**list_kwargs)
-        except TypeError:
-            list_kwargs.pop("filters", None)
-            list_kwargs.update(filters)
-            response = langfuse_client.sessions.list(**list_kwargs)
-
+        response = langfuse_client.api.sessions.list(**list_kwargs)
         return _extract_items_from_response(response)
 
-    response = langfuse_client.fetch_sessions(from_timestamp=from_timestamp, page=page, limit=limit)
-    return _extract_items_from_response(response)
+    if hasattr(langfuse_client, "fetch_sessions"):
+        response = langfuse_client.fetch_sessions(from_timestamp=from_timestamp, page=page, limit=limit)
+        return _extract_items_from_response(response)
+
+    raise RuntimeError("Unsupported Langfuse client: no session listing method available")
 
 
 def truncate_large_strings(
@@ -600,6 +572,8 @@ def serialize_full_json_string(data: Any) -> str:
     Returns:
         JSON string representation of the data
     """
+    metadata = None  # Metadata filtering not exposed for observations tool currently
+
     try:
         # Use default=str to handle datetime and other non-serializable objects
         return json.dumps(data, default=str)
@@ -821,6 +795,7 @@ async def _efficient_fetch_observations(
         user_id=None,
         trace_id=None,
         parent_observation_id=None,
+        metadata=None,
     )
 
     # Process observations and build indices
@@ -1205,6 +1180,7 @@ async def fetch_observations(
 
     # Calculate timestamps from age
     from_start_time = datetime.now(UTC) - timedelta(minutes=age)
+    metadata = None  # Metadata filtering not currently exposed for this tool
 
     try:
         observation_items, pagination = _list_observations(
@@ -1218,6 +1194,7 @@ async def fetch_observations(
             user_id=user_id,
             trace_id=trace_id,
             parent_observation_id=parent_observation_id,
+            metadata=metadata,
         )
 
         # Convert response to a serializable format
@@ -1673,6 +1650,7 @@ async def find_exceptions(
             user_id=None,
             trace_id=None,
             parent_observation_id=None,
+            metadata=None,
         )
 
         # Process observations to find and group exceptions
@@ -1768,6 +1746,7 @@ async def find_exceptions_in_file(
             user_id=None,
             trace_id=None,
             parent_observation_id=None,
+            metadata=None,
         )
 
         # Process observations to find exceptions in the specified file
@@ -1870,6 +1849,7 @@ async def get_exception_details(
             user_id=None,
             trace_id=trace_id,
             parent_observation_id=None,
+            metadata=None,
         )
 
         if not observation_items:
@@ -1969,6 +1949,7 @@ async def get_error_count(
             user_id=None,
             trace_id=None,
             parent_observation_id=None,
+            metadata=None,
         )
 
         # Count traces and observations with exceptions

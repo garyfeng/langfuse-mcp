@@ -41,9 +41,10 @@ def test_fetch_traces_with_observations(state):
     assert result["data"][0]["id"] == "trace_1"
     assert isinstance(result["data"][0]["observations"], list)
     assert result["data"][0]["observations"][0]["id"] == "obs_1"
-    assert state.langfuse_client.traces.last_list_kwargs is not None
-    assert state.langfuse_client.traces.last_list_kwargs["include_observations"] is True
-    assert state.langfuse_client.traces.last_list_kwargs["limit"] == 50
+    assert state.langfuse_client.api.trace.last_list_kwargs is not None
+    trace_kwargs = state.langfuse_client.api.trace.last_list_kwargs
+    assert trace_kwargs["limit"] == 50
+    assert "observations" in (trace_kwargs.get("fields") or "")
 
 
 def test_fetch_trace(state):
@@ -54,7 +55,7 @@ def test_fetch_trace(state):
     result = asyncio.run(fetch_trace(ctx, trace_id="trace_1", include_observations=True, output_mode="compact"))
     assert result["data"]["id"] == "trace_1"
     assert result["data"]["observations"][0]["id"] == "obs_1"
-    assert state.langfuse_client.traces.last_get_kwargs == {"trace_id": "trace_1", "include_observations": True}
+    assert state.langfuse_client.api.trace.last_get_kwargs == {"trace_id": "trace_1"}
 
 
 def test_fetch_observations(state):
@@ -78,8 +79,9 @@ def test_fetch_observations(state):
     )
     assert result["metadata"]["item_count"] == 1
     assert result["data"][0]["id"] == "obs_1"
-    assert state.langfuse_client.observations.last_list_kwargs is not None
-    assert state.langfuse_client.observations.last_list_kwargs["limit"] == 50
+    assert state.langfuse_client.api.observations.last_get_many_kwargs is not None
+    obs_kwargs = state.langfuse_client.api.observations.last_get_many_kwargs
+    assert obs_kwargs["limit"] == 50
 
 
 def test_fetch_observation(state):
@@ -89,7 +91,9 @@ def test_fetch_observation(state):
     ctx = FakeContext(state)
     result = asyncio.run(fetch_observation(ctx, observation_id="obs_1", output_mode="compact"))
     assert result["data"]["id"] == "obs_1"
-    assert state.langfuse_client.observations.last_get_kwargs == {"observation_id": "obs_1"}
+    assert state.langfuse_client.api.observations.last_get_kwargs == {
+        "observation_id": "obs_1"
+    }
 
 
 def test_fetch_sessions(state):
@@ -100,8 +104,9 @@ def test_fetch_sessions(state):
     result = asyncio.run(fetch_sessions(ctx, age=10, page=1, limit=50, output_mode="compact"))
     assert result["metadata"]["item_count"] == 1
     assert result["data"][0]["id"] == "session_1"
-    assert state.langfuse_client.sessions.last_list_kwargs is not None
-    assert state.langfuse_client.sessions.last_list_kwargs["limit"] == 50
+    assert state.langfuse_client.api.sessions.last_list_kwargs is not None
+    sessions_kwargs = state.langfuse_client.api.sessions.last_list_kwargs
+    assert sessions_kwargs["limit"] == 50
 
 
 def test_get_session_details(state):
@@ -112,5 +117,6 @@ def test_get_session_details(state):
     result = asyncio.run(get_session_details(ctx, session_id="session_1", include_observations=True, output_mode="compact"))
     assert result["data"]["found"] is True
     assert result["data"]["trace_count"] == 1
-    assert state.langfuse_client.traces.last_list_kwargs is not None
-    assert state.langfuse_client.traces.last_list_kwargs["filters"]["session_id"] == "session_1"
+    assert state.langfuse_client.api.trace.last_list_kwargs is not None
+    trace_kwargs = state.langfuse_client.api.trace.last_list_kwargs
+    assert trace_kwargs["session_id"] == "session_1"
