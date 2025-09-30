@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 
 
 @dataclass
@@ -13,8 +13,8 @@ class FakeTrace:
 
     id: str
     name: str
-    user_id: Optional[str]
-    session_id: Optional[str]
+    user_id: str | None
+    session_id: str | None
     created_at: datetime
     metadata: dict[str, Any] = field(default_factory=dict)
     tags: list[str] = field(default_factory=list)
@@ -56,7 +56,7 @@ class FakePaginatedResponse:
 class _TraceAPI:
     """Fake implementation of the v3 trace resource client."""
 
-    def __init__(self, store: "FakeDataStore") -> None:
+    def __init__(self, store: FakeDataStore) -> None:
         self._store = store
         self.last_list_kwargs: dict[str, Any] | None = None
         self.last_get_kwargs: dict[str, Any] | None = None
@@ -94,7 +94,7 @@ class _TraceAPI:
 class _ObservationsAPI:
     """Fake implementation of observations resource client."""
 
-    def __init__(self, store: "FakeDataStore") -> None:
+    def __init__(self, store: FakeDataStore) -> None:
         self._store = store
         self.last_get_many_kwargs: dict[str, Any] | None = None
         self.last_get_kwargs: dict[str, Any] | None = None
@@ -114,7 +114,7 @@ class _ObservationsAPI:
 class _SessionsAPI:
     """Fake implementation of sessions resource client."""
 
-    def __init__(self, store: "FakeDataStore") -> None:
+    def __init__(self, store: FakeDataStore) -> None:
         self._store = store
         self.last_list_kwargs: dict[str, Any] | None = None
         self.last_get_kwargs: dict[str, Any] | None = None
@@ -133,7 +133,8 @@ class _SessionsAPI:
 class FakeAPI:
     """Aggregate object exposed via FakeLangfuse.api."""
 
-    def __init__(self, store: "FakeDataStore") -> None:
+    def __init__(self, store: FakeDataStore) -> None:
+        """Wire the fake API resources to the shared backing store."""
         self.trace = _TraceAPI(store)
         self.observations = _ObservationsAPI(store)
         self.sessions = _SessionsAPI(store)
@@ -143,6 +144,7 @@ class FakeDataStore:
     """In-memory backing store shared across fake API resources."""
 
     def __init__(self) -> None:
+        """Seed deterministic trace, observation, and session fixtures."""
         now = datetime(2023, 1, 1, tzinfo=timezone.utc)
         self.observations: dict[str, FakeObservation] = {
             "obs_1": FakeObservation(
@@ -182,18 +184,22 @@ class FakeLangfuse:
     """Langfuse client double exposing the real v3 API surface."""
 
     def __init__(self) -> None:
+        """Initialise the fake client with in-memory storage and API facade."""
         self._store = FakeDataStore()
         self.api = FakeAPI(self._store)
         self.closed = False
 
     def close(self) -> None:
+        """Mark the fake client as closed to mirror the real SDK."""
         self.closed = True
 
     # Backwards compatibility for cleanup logic.
     def flush(self) -> None:  # pragma: no cover - compatibility shim
+        """No-op for compatibility with legacy cleanup hooks."""
         return None
 
     def shutdown(self) -> None:  # pragma: no cover - compatibility shim
+        """Provide the Langfuse SDK shutdown hook by delegating to close()."""
         self.close()
 
 
@@ -201,4 +207,5 @@ class FakeContext:
     """Mimic `mcp.server.fastmcp.Context` used by the tools."""
 
     def __init__(self, state: Any) -> None:
+        """Expose the minimal request context consumed by tool implementations."""
         self.request_context = type("_RC", (), {"lifespan_context": state})

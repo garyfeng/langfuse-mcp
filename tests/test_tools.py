@@ -92,9 +92,7 @@ def test_fetch_observation(state):
     ctx = FakeContext(state)
     result = asyncio.run(fetch_observation(ctx, observation_id="obs_1", output_mode="compact"))
     assert result["data"]["id"] == "obs_1"
-    assert state.langfuse_client.api.observations.last_get_kwargs == {
-        "observation_id": "obs_1"
-    }
+    assert state.langfuse_client.api.observations.last_get_kwargs == {"observation_id": "obs_1"}
 
 
 def test_fetch_sessions(state):
@@ -188,7 +186,7 @@ def test_negative_age_rejected(state):
                 tags=None,
                 include_observations=False,
                 output_mode="compact",
-        )
+            )
         )
 
 
