@@ -66,6 +66,13 @@ If you already have an older version of `uv` installed, you might need to update
 uv pip install langfuse-mcp
 ```
 
+If you're iterating on this repository, install the local checkout instead of PyPI:
+
+```bash
+# from the repo root
+uv pip install --editable .
+```
+
 ### Recommended local environment
 
 For development we suggest creating an isolated environment pinned to Python 3.11 (the version used in CI):
