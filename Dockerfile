@@ -15,14 +15,12 @@ RUN useradd -ms /bin/bash appuser
 USER appuser
 WORKDIR /home/appuser/app
 
-# Copy source into image
-# (We build from local source to include latest changes.)
-# Install runtime dependencies from PyPI (stable release)
-RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir langfuse-mcp
+# Copy project source into the image so we can install the current tree.
+COPY --chown=appuser:appuser . ./
 
-# Copy source only for reference (optional). Not needed for runtime.
-COPY --chown=appuser:appuser README.md LICENSE ./
+# Install the local checkout (editable isn't needed inside the container).
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir .
 
 # Default environment — keep stdout clean for MCP stdio, log to file
 ENV LANGFUSE_LOG_LEVEL=INFO \

@@ -106,10 +106,14 @@ uvx langfuse-mcp --public-key YOUR_KEY --secret-key YOUR_SECRET --host https://c
 langfuse-mcp --public-key YOUR_KEY --secret-key YOUR_SECRET --host https://cloud.langfuse.com
 ```
 
+> **Local checkout tip**: During development run `uv run --from /path/to/langfuse-mcp langfuse-mcp ...` (or `uv run python -m langfuse_mcp ...`) so `uv` executes the code in your working tree. Using the PyPI shortcut skips repository-only changes such as the new environment-based credential defaults and logging tweaks.
+
 The server writes diagnostic logs to `/tmp/langfuse_mcp.log`. Remove the `--host` switch if you are targeting the default Cloud endpoint.
 Use `--log-level` (e.g., `--log-level DEBUG`) and `--log-to-console` to control verbosity during debugging.
 
 ### Run with Docker
+
+Build the image from the repository root so the container installs the current checkout instead of the latest PyPI release:
 
 ```bash
 docker build -t langfuse-logs-mcp .
@@ -123,6 +127,8 @@ docker run --rm -i \
 ```
 
 > **Why no `-t`?** Allocating a pseudo-TTY can interfere with MCP stdio clients. Use `-i` only so the server communicates over plain stdin/stdout.
+
+The Dockerfile copies the local source tree and installs it with `pip install .`, so the container always runs your latest commits - a must while testing features that have not shipped on PyPI.
 
 
 ## Configuration with MCP clients
