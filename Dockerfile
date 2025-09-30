@@ -8,6 +8,7 @@ FROM python:3.11-slim
 RUN apt-get update -y && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 # Create app user
