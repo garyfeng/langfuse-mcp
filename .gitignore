@@ -57,6 +57,7 @@ cover/
 
 # Django stuff:
 *.log
+logs/
 local_settings.py
 db.sqlite3
 db.sqlite3-journal
@@ -180,3 +181,6 @@ data/
 .cursor/mcp.json
 
 run_mcp.py
+dump/
+*.out
+.vscode

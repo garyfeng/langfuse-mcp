@@ -18,6 +18,7 @@ from enum import Enum
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, version
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from typing import Annotated, Any, Literal, cast
 
 from cachetools import LRUCache
@@ -32,11 +33,11 @@ except PackageNotFoundError:
     __version__ = "0.1.1.dev0"
 
 # Set up logging with rotation
-LOG_FILE = "/tmp/langfuse_mcp.log"
+LOG_FILE = Path(os.getenv("LANGFUSE_MCP_LOG_FILE", "/tmp/langfuse_mcp.log")).expanduser()
+LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
-# Create handlers - only use file handler, no console handler
 file_handler = RotatingFileHandler(
     LOG_FILE,
     maxBytes=10 * 1024 * 1024,  # 10 MB
@@ -44,22 +45,34 @@ file_handler = RotatingFileHandler(
     encoding="utf-8",
 )
 
-# Set formatter for handlers
 formatter = logging.Formatter(LOG_FORMAT, LOG_DATE_FORMAT)
 file_handler.setFormatter(formatter)
 
-# Configure root logger
-logging.basicConfig(
-    level=logging.INFO,  # Change from DEBUG to INFO to reduce verbosity
-    handlers=[file_handler],  # Only use file handler
-)
+
+def configure_logging(log_level: str, log_to_console: bool) -> logging.Logger:
+    """Configure application logging based on CLI flags."""
+
+    level = logging.getLevelName(log_level.upper()) if isinstance(log_level, str) else logging.INFO
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(level)
+
+    for handler in list(root_logger.handlers):
+        root_logger.removeHandler(handler)
+
+    file_handler.setLevel(level)
+    root_logger.addHandler(file_handler)
+
+    if log_to_console:
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(formatter)
+        console_handler.setLevel(level)
+        root_logger.addHandler(console_handler)
+
+    return logging.getLogger("langfuse_mcp")
+
 
 logger = logging.getLogger("langfuse_mcp")
-logger.info("=" * 80)
-logger.info(f"Langfuse MCP v{__version__} loading...")
-logger.info(f"Python version: {sys.version}")
-logger.info(f"Running from: {__file__}")
-logger.info("=" * 80)
 
 # Constants
 HOUR = 60  # minutes
@@ -105,6 +118,8 @@ LARGE_FIELDS = [
     "attributes.output",
 ]
 
+LOWER_LARGE_FIELDS = {field.lower() for field in LARGE_FIELDS}
+
 # Fields that are considered essential and should be preserved even in minimal representation
 ESSENTIAL_FIELDS = [
     "id",
@@ -136,6 +151,315 @@ OUTPUT_MODE_LITERAL = Literal["compact", "full_json_string", "full_json_file"]
 
 # Define a custom Dict type for our standardized response format
 ResponseDict = dict[str, Any]
+
+
+def _ensure_output_mode(mode: OUTPUT_MODE_LITERAL | OutputMode | str | OutputMode) -> OutputMode:
+    """Normalize user-provided output mode values."""
+
+    if isinstance(mode, OutputMode):
+        return mode
+
+    try:
+        return OutputMode(str(mode))
+    except (ValueError, TypeError):
+        logger.warning(f"Unknown output mode '{mode}', defaulting to compact")
+        return OutputMode.COMPACT
+
+
+def _load_env_file(env_path: Path | None = None) -> None:
+    """Load environment variables from a `.env` file if present."""
+
+    if env_path is None:
+        env_path = Path(__file__).resolve().parent.parent / ".env"
+
+    if not env_path.exists() or not env_path.is_file():
+        return
+
+    try:
+        with env_path.open("r", encoding="utf-8") as env_file:
+            for line in env_file:
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                if "=" not in stripped:
+                    continue
+                key, value = stripped.split("=", 1)
+                key = key.strip()
+                value = value.strip()
+                if key and key not in os.environ:
+                    os.environ[key] = value
+    except OSError as exc:
+        logger.warning(f"Unable to load environment file {env_path}: {exc}")
+
+
+def _read_env_defaults() -> dict[str, Any]:
+    """Read environment defaults used by the CLI."""
+
+    return {
+        "public_key": os.getenv("LANGFUSE_PUBLIC_KEY"),
+        "secret_key": os.getenv("LANGFUSE_SECRET_KEY"),
+        "host": os.getenv("LANGFUSE_HOST") or "https://cloud.langfuse.com",
+        "log_level": os.getenv("LANGFUSE_LOG_LEVEL", "INFO"),
+        "log_to_console": os.getenv("LANGFUSE_LOG_TO_CONSOLE", "").lower() in {"1", "true", "yes"},
+    }
+
+
+def _build_arg_parser(env_defaults: dict[str, Any]) -> argparse.ArgumentParser:
+    """Construct the CLI argument parser using provided defaults."""
+
+    parser = argparse.ArgumentParser(description="Langfuse MCP Server")
+    parser.add_argument(
+        "--public-key",
+        type=str,
+        default=env_defaults["public_key"],
+        required=env_defaults["public_key"] is None,
+        help="Langfuse public key",
+    )
+    parser.add_argument(
+        "--secret-key",
+        type=str,
+        default=env_defaults["secret_key"],
+        required=env_defaults["secret_key"] is None,
+        help="Langfuse secret key",
+    )
+    parser.add_argument("--host", type=str, default=env_defaults["host"], help="Langfuse host URL")
+    parser.add_argument("--cache-size", type=int, default=100, help="Size of LRU caches used for caching data")
+    parser.add_argument(
+        "--dump-dir",
+        type=str,
+        default="/tmp/langfuse_mcp_dumps",
+        help=(
+            "Directory to save full JSON dumps when 'output_mode' is 'full_json_file'. The directory will be created if it doesn't exist."
+        ),
+    )
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default=env_defaults["log_level"],
+        choices=["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"],
+        help="Logging level (defaults to INFO).",
+    )
+    parser.add_argument(
+        "--log-to-console",
+        action="store_true",
+        default=env_defaults["log_to_console"],
+        help="Also emit logs to stdout in addition to the rotating file handler.",
+    )
+    parser.add_argument(
+        "--no-log-to-console",
+        action="store_false",
+        dest="log_to_console",
+        help=argparse.SUPPRESS,
+    )
+
+    return parser
+
+
+def _sdk_object_to_python(obj: Any) -> Any:
+    """Convert Langfuse SDK models (pydantic/dataclasses) into plain Python types."""
+
+    if obj is None:
+        return None
+
+    if isinstance(obj, (str, int, float, bool)):
+        return obj
+
+    if isinstance(obj, datetime):
+        # Preserve timezone info when available
+        return obj.isoformat()
+
+    if isinstance(obj, (list, tuple, set)):
+        return [_sdk_object_to_python(item) for item in obj]
+
+    if isinstance(obj, dict):
+        return {key: _sdk_object_to_python(value) for key, value in obj.items()}
+
+    if hasattr(obj, "model_dump"):
+        return _sdk_object_to_python(obj.model_dump())
+
+    if hasattr(obj, "dict"):
+        return _sdk_object_to_python(obj.dict())
+
+    if hasattr(obj, "__dict__"):
+        data = {key: value for key, value in vars(obj).items() if not key.startswith("_")}
+        return _sdk_object_to_python(data)
+
+    return obj
+
+
+def _extract_items_from_response(response: Any) -> tuple[list[Any], dict[str, Any]]:
+    """Normalize Langfuse SDK list responses into items and pagination metadata."""
+
+    if response is None:
+        return [], {}
+
+    if isinstance(response, dict):
+        items = response.get("items") or response.get("data") or []
+        pagination = response.get("meta") or {}
+        return list(items), pagination
+
+    if hasattr(response, "items"):
+        items = getattr(response, "items")
+        pagination = {
+            "next_page": getattr(response, "next_page", None),
+            "total": getattr(response, "total", None),
+        }
+        return list(items), pagination
+
+    if hasattr(response, "data"):
+        return list(response.data), {}
+
+    if isinstance(response, list):
+        return response, {}
+
+    return [response], {}
+
+
+def _metadata_matches(item: Any, metadata_filter: dict[str, Any]) -> bool:
+    """Determine whether the provided item matches the requested metadata filter."""
+
+    item_dict = _sdk_object_to_python(item)
+    metadata = item_dict.get("metadata") or {}
+    return all(metadata.get(key) == value for key, value in metadata_filter.items())
+
+
+def _list_traces(
+    langfuse_client: Any,
+    *,
+    limit: int,
+    page: int,
+    include_observations: bool,
+    tags: list[str] | None,
+    from_timestamp: datetime,
+    name: str | None,
+    user_id: str | None,
+    session_id: str | None,
+    metadata: dict[str, Any] | None,
+) -> tuple[list[Any], dict[str, Any]]:
+    """Fetch traces via the Langfuse SDK handling both v2 and v3 signatures."""
+
+    if not hasattr(langfuse_client, "api") or not hasattr(langfuse_client.api, "trace"):
+        raise RuntimeError("Unsupported Langfuse client: no trace listing method available")
+
+    list_kwargs: dict[str, Any] = {
+        "limit": limit or None,
+        "page": page or None,
+        "user_id": user_id,
+        "name": name,
+        "session_id": session_id,
+        "from_timestamp": from_timestamp,
+        "tags": tags,
+    }
+
+    # Include observation payloads via the fields selector when requested.
+    if include_observations and metadata:
+        list_kwargs["fields"] = "core,io,observations"
+    elif include_observations:
+        list_kwargs["fields"] = "core,observations"
+    elif metadata:
+        list_kwargs["fields"] = "core,io"
+
+    list_kwargs = {k: v for k, v in list_kwargs.items() if v is not None}
+
+    response = langfuse_client.api.trace.list(**list_kwargs)
+    items, pagination = _extract_items_from_response(response)
+
+    if metadata:
+        items = [item for item in items if _metadata_matches(item, metadata)]
+        pagination = {**pagination, "total": len(items)}
+
+    return items, pagination
+
+
+def _list_observations(
+    langfuse_client: Any,
+    *,
+    limit: int,
+    page: int,
+    from_start_time: datetime,
+    to_start_time: datetime | None,
+    obs_type: str | None,
+    name: str | None,
+    user_id: str | None,
+    trace_id: str | None,
+    parent_observation_id: str | None,
+    metadata: dict[str, Any] | None,
+) -> tuple[list[Any], dict[str, Any]]:
+    """Fetch observations via the Langfuse SDK handling v2/v3 differences."""
+
+    if not hasattr(langfuse_client, "api") or not hasattr(langfuse_client.api, "observations"):
+        raise RuntimeError("Unsupported Langfuse client: no observation listing method available")
+
+    list_kwargs: dict[str, Any] = {
+        "limit": limit or None,
+        "page": page or None,
+        "name": name,
+        "user_id": user_id,
+        "type": obs_type,
+        "trace_id": trace_id,
+        "parent_observation_id": parent_observation_id,
+        "from_start_time": from_start_time,
+        "to_start_time": to_start_time,
+    }
+    list_kwargs = {k: v for k, v in list_kwargs.items() if v is not None}
+
+    response = langfuse_client.api.observations.get_many(**list_kwargs)
+    items, pagination = _extract_items_from_response(response)
+
+    if metadata:
+        items = [item for item in items if _metadata_matches(item, metadata)]
+        pagination = {**pagination, "total": len(items)}
+
+    return items, pagination
+
+
+def _get_observation(langfuse_client: Any, observation_id: str) -> Any:
+    """Fetch a single observation using either the v3 or v2 SDK surface."""
+
+    if hasattr(langfuse_client, "api") and hasattr(langfuse_client.api, "observations"):
+        return langfuse_client.api.observations.get(observation_id=observation_id)
+
+    if hasattr(langfuse_client, "fetch_observation"):
+        response = langfuse_client.fetch_observation(observation_id)
+        return getattr(response, "data", response)
+
+    raise RuntimeError("Unsupported Langfuse client: no observation getter available")
+
+
+def _get_trace(langfuse_client: Any, trace_id: str, include_observations: bool) -> Any:
+    """Fetch a single trace handling SDK version differences.
+
+    Note: Some Langfuse SDK versions do not support a `fields` selector on `get()`. We avoid
+    passing `fields` here and rely on embedding observations separately when requested.
+    """
+
+    if not hasattr(langfuse_client, "api") or not hasattr(langfuse_client.api, "trace"):
+        raise RuntimeError("Unsupported Langfuse client: no trace getter available")
+
+    return langfuse_client.api.trace.get(trace_id=trace_id)
+
+
+def _list_sessions(
+    langfuse_client: Any,
+    *,
+    limit: int,
+    page: int,
+    from_timestamp: datetime,
+) -> tuple[list[Any], dict[str, Any]]:
+    """Fetch sessions via the Langfuse SDK handling v2/v3 differences."""
+
+    if not hasattr(langfuse_client, "api") or not hasattr(langfuse_client.api, "sessions"):
+        raise RuntimeError("Unsupported Langfuse client: no session listing method available")
+
+    list_kwargs: dict[str, Any] = {
+        "limit": limit or None,
+        "page": page or None,
+        "from_timestamp": from_timestamp,
+    }
+    list_kwargs = {k: v for k, v in list_kwargs.items() if v is not None}
+
+    response = langfuse_client.api.sessions.list(**list_kwargs)
+    return _extract_items_from_response(response)
 
 
 def truncate_large_strings(
@@ -194,7 +518,8 @@ def truncate_large_strings(
         # Second pass: process known large fields next
         if truncation_level < 2:  # Skip detailed content at highest truncation level
             for key in list(obj.keys()):
-                if key in LARGE_FIELDS or any(field in key.lower() for field in LARGE_FIELDS):
+                lower_key = key.lower()
+                if lower_key in LOWER_LARGE_FIELDS or any(field in lower_key for field in LOWER_LARGE_FIELDS):
                     if key not in result:  # Skip if already processed
                         value = obj[key]
                         if isinstance(value, str) and len(value) > adjusted_max_length:
@@ -359,6 +684,8 @@ def serialize_full_json_string(data: Any) -> str:
     Returns:
         JSON string representation of the data
     """
+    metadata = None  # Metadata filtering not exposed for observations tool currently
+
     try:
         # Use default=str to handle datetime and other non-serializable objects
         return json.dumps(data, default=str)
@@ -410,7 +737,12 @@ def save_full_data_to_file(data: Any, base_filename_prefix: str, state: "MCPStat
         return {"status": "error", "message": f"Failed to save full data: {str(e)}", "file_path": None}
 
 
-def process_data_with_mode(data: Any, output_mode: OUTPUT_MODE_LITERAL, base_filename_prefix: str, state: "MCPState") -> Any:
+def process_data_with_mode(
+    data: Any,
+    output_mode: OUTPUT_MODE_LITERAL | OutputMode,
+    base_filename_prefix: str,
+    state: "MCPState",
+) -> tuple[Any, dict[str, Any] | None]:
     """Process data according to the specified output mode.
 
     Args:
@@ -420,42 +752,35 @@ def process_data_with_mode(data: Any, output_mode: OUTPUT_MODE_LITERAL, base_fil
         state: MCPState with configuration
 
     Returns:
-        Processed data according to the output mode
+        Tuple of (processed data, optional metadata additions)
     """
-    if output_mode == OutputMode.COMPACT:
-        return process_compact_data(data)
+    mode = _ensure_output_mode(output_mode)
 
-    elif output_mode == OutputMode.FULL_JSON_STRING:
-        return serialize_full_json_string(data)
+    if mode == OutputMode.COMPACT:
+        return process_compact_data(data), None
 
-    elif output_mode == OutputMode.FULL_JSON_FILE:
+    if mode == OutputMode.FULL_JSON_STRING:
+        return serialize_full_json_string(data), None
+
+    if mode == OutputMode.FULL_JSON_FILE:
         # Process a compact version of the data
         compact_data = process_compact_data(data)
 
         # Save the full data to a file
         save_info = save_full_data_to_file(data, base_filename_prefix, state)
 
-        # Handle different data types for the response
-        if isinstance(compact_data, dict):
-            # For dictionary responses, add file info directly to the dictionary
-            compact_data["_file_save_info"] = save_info
-            if save_info["status"] == "success":
-                compact_data["_message"] = "Response summarized. Full details in the saved file."
-                compact_data["_full_json_file_path"] = save_info["file_path"]
-        elif isinstance(compact_data, list):
-            # For list responses, wrap the list in a special structure
-            # that preserves the list while adding file info
-            result = {"_type": "list_response", "_items": compact_data, "_count": len(compact_data), "_file_save_info": save_info}
-            if save_info["status"] == "success":
-                result["_message"] = f"Response contains {len(compact_data)} items. Full details in the saved file."
-                result["_full_json_file_path"] = save_info["file_path"]
-            return result
+        file_meta = {
+            "file_path": save_info.get("file_path"),
+            "file_info": save_info,
+        }
+        if save_info.get("status") == "success" and save_info.get("file_path"):
+            file_meta["message"] = "Full response saved to file."
 
-        return compact_data
+        return compact_data, file_meta
 
-    else:
-        logger.warning(f"Unknown output mode: {output_mode}, using compact mode")
-        return process_compact_data(data)
+    # Fallback
+    logger.warning(f"Unknown output mode: {output_mode}, defaulting to compact mode")
+    return process_compact_data(data), None
 
 
 @dataclass
@@ -537,7 +862,8 @@ def clear_caches(state: MCPState) -> None:
 def _get_cached_observation(langfuse_client: Langfuse, observation_id: str) -> Any:
     """Cache observation details to avoid duplicate API calls."""
     try:
-        return langfuse_client.fetch_observation(observation_id).data
+        observation = _get_observation(langfuse_client, observation_id)
+        return _sdk_object_to_python(observation)
     except Exception as e:
         logger.warning(f"Error fetching observation {observation_id}: {str(e)}")
         return None
@@ -568,38 +894,61 @@ async def _efficient_fetch_observations(
         return state.observation_cache[cache_key]
 
     # Fetch observations from Langfuse
-    observations_response = langfuse_client.fetch_observations(
+    observation_items, _ = _list_observations(
+        langfuse_client,
+        limit=500,
+        page=1,
         from_start_time=from_timestamp,
         to_start_time=to_timestamp,
-        type="SPAN",
+        obs_type="SPAN",
+        name=None,
+        user_id=None,
+        trace_id=None,
+        parent_observation_id=None,
+        metadata=None,
     )
 
     # Process observations and build indices
-    observations = {}
-    for obs in observations_response.data:
-        if not hasattr(obs, "events") or not obs.events:
+    observations: dict[str, Any] = {}
+    for obs in observation_items:
+        events = []
+        if hasattr(obs, "events"):
+            events = getattr(obs, "events") or []
+        elif isinstance(obs, dict):
+            events = obs.get("events", [])
+
+        if not events:
             continue
 
-        for event in obs.events:
-            if not event.attributes.get("exception.type"):
+        for event in events:
+            attributes = getattr(event, "attributes", None)
+            if attributes is None and isinstance(event, dict):
+                attributes = event.get("attributes")
+            if not attributes or not attributes.get("exception.type"):
                 continue
 
             # Store observation
-            observations[obs.id] = obs
+            obs_id = getattr(obs, "id", None) or obs.get("id") if isinstance(obs, dict) else None
+            if not obs_id:
+                continue
+            observations[obs_id] = _sdk_object_to_python(obs)
 
             # Update file index if we have filepath info
-            if hasattr(obs, "metadata") and obs.metadata:
-                file = obs.metadata.get("code.filepath")
+            metadata_block = getattr(obs, "metadata", None)
+            if metadata_block is None and isinstance(obs, dict):
+                metadata_block = obs.get("metadata")
+            if metadata_block:
+                file = metadata_block.get("code.filepath")
                 if file:
                     if file not in state.file_to_observations_map:
                         state.file_to_observations_map[file] = set()
-                    state.file_to_observations_map[file].add(obs.id)
+                    state.file_to_observations_map[file].add(obs_id)
 
             # Update exception type index
-            exc_type = event.attributes["exception.type"]
+            exc_type = attributes["exception.type"]
             if exc_type not in state.exception_type_map:
                 state.exception_type_map[exc_type] = set()
-            state.exception_type_map[exc_type].add(obs.id)
+            state.exception_type_map[exc_type].add(obs_id)
 
     # Cache the processed observations
     state.observation_cache[cache_key] = observations
@@ -624,42 +973,39 @@ async def _embed_observations_in_traces(state: MCPState, traces: list[Any]) -> N
         if not isinstance(trace, dict) or "observations" not in trace:
             continue
 
-        observation_ids = trace["observations"]
-        if not isinstance(observation_ids, list):
+        observation_refs = trace["observations"]
+        if not isinstance(observation_refs, list):
             continue
 
         # Skip if there are no observations
-        if not observation_ids:
+        if not observation_refs:
             continue
 
-        # Fetch each observation
+        # If we already have hydrated observation objects, normalize them and continue
+        first_ref = observation_refs[0]
+        if not isinstance(first_ref, str):
+            trace["observations"] = [_sdk_object_to_python(obs) for obs in observation_refs]
+            continue
+
+        # Fetch each observation when only IDs are provided
         full_observations = []
-        for obs_id in observation_ids:
+        for obs_id in observation_refs:
             try:
-                # Use the client to fetch the observation
-                obs_response = state.langfuse_client.fetch_observation(obs_id)
-
-                # Convert to serializable format
-                if hasattr(obs_response.data, "dict"):
-                    obs_data = obs_response.data.dict()
-                else:
-                    obs_data = obs_response.data
-
+                obs = _get_observation(state.langfuse_client, obs_id)
+                obs_data = _sdk_object_to_python(obs)
                 full_observations.append(obs_data)
                 logger.debug(f"Fetched observation {obs_id} for trace {trace.get('id', 'unknown')}")
             except Exception as e:
                 logger.warning(f"Error fetching observation {obs_id}: {str(e)}")
-                # Include a placeholder with the ID for reference
                 full_observations.append({"id": obs_id, "fetch_error": str(e)})
 
-        # Replace the observation IDs with the full objects
         trace["observations"] = full_observations
         logger.debug(f"Embedded {len(full_observations)} observations in trace {trace.get('id', 'unknown')}")
 
 
 async def fetch_traces(
     ctx: Context,
-    age: int = Field(..., description="Minutes ago to start looking (e.g., 1440 for 24 hours)"),
+    age: ValidatedAge = Field(..., description="Minutes ago to start looking (e.g., 1440 for 24 hours)"),
     name: str | None = Field(None, description="Name of the trace to filter by"),
     user_id: str | None = Field(None, description="User ID to filter traces by"),
     session_id: str | None = Field(None, description="Session ID to filter traces by"),
@@ -725,7 +1071,11 @@ async def fetch_traces(
         - For full data but viewable in responses: use include_observations=True with output_mode="compact"
         - For complete data dumps: use include_observations=True with output_mode="full_json_file"
     """
+    age = validate_age(age)
+
     state = cast(MCPState, ctx.request_context.lifespan_context)
+
+    age = validate_age(age)
 
     # Calculate timestamps from age
     from_timestamp = datetime.now(UTC) - timedelta(minutes=age)
@@ -739,13 +1089,22 @@ async def fetch_traces(
             else:
                 tags_list = [tags]
 
-        # Use the fetch_traces method provided by the Langfuse SDK
-        response = state.langfuse_client.fetch_traces(
-            name=name, user_id=user_id, session_id=session_id, from_timestamp=from_timestamp, page=page, limit=limit, tags=tags_list
+        # Use the resource-style API when available (Langfuse v3) with fallback to v2 helpers
+        trace_items, pagination = _list_traces(
+            state.langfuse_client,
+            limit=limit,
+            page=page,
+            include_observations=include_observations,
+            tags=tags_list,
+            from_timestamp=from_timestamp,
+            name=name,
+            user_id=user_id,
+            session_id=session_id,
+            metadata=metadata,
         )
 
         # Convert response to a serializable format
-        raw_traces = [trace.dict() if hasattr(trace, "dict") else trace for trace in response.data]
+        raw_traces = [_sdk_object_to_python(trace) for trace in trace_items]
 
         # If include_observations is True, fetch and embed the full observation objects
         if include_observations and raw_traces:
@@ -753,32 +1112,31 @@ async def fetch_traces(
             await _embed_observations_in_traces(state, raw_traces)
 
         # Process based on output mode
+        mode = _ensure_output_mode(output_mode)
         base_filename_prefix = "traces"
-        processed_data = process_data_with_mode(raw_traces, output_mode, base_filename_prefix, state)
-
-        # Determine file path information
-        file_path = None
-        file_info = None
-
-        # Extract file information if available
-        if output_mode == OutputMode.FULL_JSON_FILE:
-            if isinstance(processed_data, dict) and "_file_save_info" in processed_data:
-                file_info = processed_data.get("_file_save_info")
-                file_path = processed_data.get("_full_json_file_path")
-
-                # If it's a wrapped list response, keep the structure intact
-                if processed_data.get("_type") == "list_response":
-                    return processed_data
+        processed_data, file_meta = process_data_with_mode(raw_traces, mode, base_filename_prefix, state)
 
         logger.info(
-            f"Found {len(raw_traces)} traces, returning with output_mode={output_mode}, include_observations={include_observations}"
+            f"Found {len(raw_traces)} traces, returning with output_mode={mode}, include_observations={include_observations}"
         )
 
         # Return data in the standard response format
-        if output_mode == OutputMode.FULL_JSON_STRING:
+        if mode == OutputMode.FULL_JSON_STRING:
             return processed_data
-        else:
-            return {"data": processed_data, "metadata": {"item_count": len(raw_traces), "file_path": file_path, "file_info": file_info}}
+
+        metadata_block = {
+            "item_count": len(raw_traces),
+            "file_path": None,
+            "file_info": None,
+        }
+        if pagination.get("next_page") is not None:
+            metadata_block["next_page"] = pagination["next_page"]
+        if pagination.get("total") is not None:
+            metadata_block["total"] = pagination["total"]
+        if file_meta:
+            metadata_block.update(file_meta)
+
+        return {"data": processed_data, "metadata": metadata_block}
     except Exception as e:
         logger.error(f"Error in fetch_traces: {str(e)}")
         logger.exception(e)
@@ -837,39 +1195,42 @@ async def fetch_trace(
     state = cast(MCPState, ctx.request_context.lifespan_context)
 
     try:
-        # Use the fetch_trace method provided by the Langfuse SDK
-        response = state.langfuse_client.fetch_trace(trace_id)
+        # Use the resource-style API when available
+        trace = _get_trace(state.langfuse_client, trace_id, include_observations)
 
         # Convert response to a serializable format
-        raw_trace = response.data.dict() if hasattr(response.data, "dict") else response.data
+        raw_trace = _sdk_object_to_python(trace)
 
-        # If include_observations is True, fetch and embed the full observation objects
+        if not isinstance(raw_trace, dict):
+            logger.debug("Trace response normalized into dictionary structure")
+            raw_trace = _sdk_object_to_python({"trace": raw_trace})
+
+        # If include_observations is True and the API did not hydrate them, fetch and embed
         if include_observations and raw_trace:
-            if isinstance(raw_trace, dict) and "observations" in raw_trace:
-                logger.info(f"Fetching full observation details for {len(raw_trace.get('observations', []))} observations")
+            embedded = raw_trace.get("observations", []) if isinstance(raw_trace, dict) else []
+            if embedded and isinstance(embedded[0], str):
+                logger.info(f"Fetching full observation details for {len(embedded)} observations")
                 await _embed_observations_in_traces(state, [raw_trace])
 
         # Process based on output mode
+        mode = _ensure_output_mode(output_mode)
         base_filename_prefix = f"trace_{trace_id}"
-        processed_data = process_data_with_mode(raw_trace, output_mode, base_filename_prefix, state)
+        processed_data, file_meta = process_data_with_mode(raw_trace, mode, base_filename_prefix, state)
 
-        # Determine file path information
-        file_path = None
-        file_info = None
-
-        # Extract file information if available
-        if output_mode == OutputMode.FULL_JSON_FILE:
-            if isinstance(processed_data, dict) and "_file_save_info" in processed_data:
-                file_info = processed_data.get("_file_save_info")
-                file_path = processed_data.get("_full_json_file_path")
-
-        logger.info(f"Retrieved trace {trace_id}, returning with output_mode={output_mode}, include_observations={include_observations}")
+        logger.info(f"Retrieved trace {trace_id}, returning with output_mode={mode}, include_observations={include_observations}")
 
         # Return data in the standard response format
-        if output_mode == OutputMode.FULL_JSON_STRING:
+        if mode == OutputMode.FULL_JSON_STRING:
             return processed_data
-        else:
-            return {"data": processed_data, "metadata": {"file_path": file_path, "file_info": file_info}}
+
+        metadata_block = {
+            "file_path": None,
+            "file_info": None,
+        }
+        if file_meta:
+            metadata_block.update(file_meta)
+
+        return {"data": processed_data, "metadata": metadata_block}
     except Exception as e:
         logger.error(f"Error fetching trace {trace_id}: {str(e)}")
         logger.exception(e)
@@ -881,7 +1242,7 @@ async def fetch_observations(
     type: Literal["SPAN", "GENERATION", "EVENT"] | None = Field(
         None, description="The observation type to filter by ('SPAN', 'GENERATION', or 'EVENT')"
     ),
-    age: int = Field(..., description="Minutes ago to start looking (e.g., 1440 for 24 hours)"),
+    age: ValidatedAge = Field(..., description="Minutes ago to start looking (e.g., 1440 for 24 hours)"),
     name: str | None = Field(None, description="Optional name filter (string pattern to match)"),
     user_id: str | None = Field(None, description="Optional user ID filter (exact match)"),
     trace_id: str | None = Field(None, description="Optional trace ID filter (exact match)"),
@@ -920,53 +1281,54 @@ async def fetch_observations(
     """
     state = cast(MCPState, ctx.request_context.lifespan_context)
 
+    age = validate_age(age)
+
     # Calculate timestamps from age
     from_start_time = datetime.now(UTC) - timedelta(minutes=age)
+    metadata = None  # Metadata filtering not currently exposed for this tool
 
     try:
-        # Use the fetch_observations method provided by the Langfuse SDK
-        response = state.langfuse_client.fetch_observations(
-            type=type,
+        observation_items, pagination = _list_observations(
+            state.langfuse_client,
+            limit=limit,
+            page=page,
+            from_start_time=from_start_time,
+            to_start_time=None,
+            obs_type=type,
             name=name,
             user_id=user_id,
             trace_id=trace_id,
             parent_observation_id=parent_observation_id,
-            from_start_time=from_start_time,
-            page=page,
-            limit=limit,
+            metadata=metadata,
         )
 
         # Convert response to a serializable format
-        raw_observations = [obs.dict() if hasattr(obs, "dict") else obs for obs in response.data]
+        raw_observations = [_sdk_object_to_python(obs) for obs in observation_items]
 
         # Process based on output mode
+        mode = _ensure_output_mode(output_mode)
         base_filename_prefix = f"observations_{type or 'all'}"
-        processed_data = process_data_with_mode(raw_observations, output_mode, base_filename_prefix, state)
+        processed_data, file_meta = process_data_with_mode(raw_observations, mode, base_filename_prefix, state)
 
-        # Determine file path information
-        file_path = None
-        file_info = None
-
-        # Extract file information if available
-        if output_mode == OutputMode.FULL_JSON_FILE:
-            if isinstance(processed_data, dict) and "_file_save_info" in processed_data:
-                file_info = processed_data.get("_file_save_info")
-                file_path = processed_data.get("_full_json_file_path")
-
-                # If it's a wrapped list response, keep the structure intact
-                if processed_data.get("_type") == "list_response":
-                    return processed_data
-
-        logger.info(f"Found {len(raw_observations)} observations, returning with output_mode={output_mode}")
+        logger.info(f"Found {len(raw_observations)} observations, returning with output_mode={mode}")
 
         # Return data in the standard response format
-        if output_mode == OutputMode.FULL_JSON_STRING:
+        if mode == OutputMode.FULL_JSON_STRING:
             return processed_data
-        else:
-            return {
-                "data": processed_data,
-                "metadata": {"item_count": len(raw_observations), "file_path": file_path, "file_info": file_info},
-            }
+
+        metadata_block = {
+            "item_count": len(raw_observations),
+            "file_path": None,
+            "file_info": None,
+        }
+        if pagination.get("next_page") is not None:
+            metadata_block["next_page"] = pagination["next_page"]
+        if pagination.get("total") is not None:
+            metadata_block["total"] = pagination["total"]
+        if file_meta:
+            metadata_block.update(file_meta)
+
+        return {"data": processed_data, "metadata": metadata_block}
     except Exception as e:
         logger.error(f"Error fetching observations: {str(e)}")
         logger.exception(e)
@@ -1002,33 +1364,27 @@ async def fetch_observation(
     state = cast(MCPState, ctx.request_context.lifespan_context)
 
     try:
-        # Use the fetch_observation method provided by the Langfuse SDK
-        response = state.langfuse_client.fetch_observation(observation_id)
+        # Use the resource-style API when available
+        observation = _get_observation(state.langfuse_client, observation_id)
 
         # Convert response to a serializable format
-        raw_observation = response.data.dict() if hasattr(response.data, "dict") else response.data
+        raw_observation = _sdk_object_to_python(observation)
 
         # Process based on output mode
         base_filename_prefix = f"observation_{observation_id}"
-        processed_data = process_data_with_mode(raw_observation, output_mode, base_filename_prefix, state)
+        mode = _ensure_output_mode(output_mode)
+        processed_data, file_meta = process_data_with_mode(raw_observation, mode, base_filename_prefix, state)
 
-        # Determine file path information
-        file_path = None
-        file_info = None
+        logger.info(f"Retrieved observation {observation_id}, returning with output_mode={mode}")
 
-        # Extract file information if available
-        if output_mode == OutputMode.FULL_JSON_FILE:
-            if isinstance(processed_data, dict) and "_file_save_info" in processed_data:
-                file_info = processed_data.get("_file_save_info")
-                file_path = processed_data.get("_full_json_file_path")
-
-        logger.info(f"Retrieved observation {observation_id}, returning with output_mode={output_mode}")
-
-        # Return data in the standard response format
-        if output_mode == OutputMode.FULL_JSON_STRING:
+        if mode == OutputMode.FULL_JSON_STRING:
             return processed_data
-        else:
-            return {"data": processed_data, "metadata": {"file_path": file_path, "file_info": file_info}}
+
+        metadata_block = {"file_path": None, "file_info": None}
+        if file_meta:
+            metadata_block.update(file_meta)
+
+        return {"data": processed_data, "metadata": metadata_block}
     except Exception as e:
         logger.error(f"Error fetching observation {observation_id}: {str(e)}")
         logger.exception(e)
@@ -1037,7 +1393,7 @@ async def fetch_observation(
 
 async def fetch_sessions(
     ctx: Context,
-    age: int = Field(..., description="Minutes ago to start looking (e.g., 1440 for 24 hours)"),
+    age: ValidatedAge = Field(..., description="Minutes ago to start looking (e.g., 1440 for 24 hours)"),
     page: int = Field(1, description="Page number for pagination (starts at 1)"),
     limit: int = Field(50, description="Maximum number of sessions to return per page"),
     output_mode: OUTPUT_MODE_LITERAL = Field(
@@ -1067,22 +1423,41 @@ async def fetch_sessions(
     """
     state = cast(MCPState, ctx.request_context.lifespan_context)
 
+    age = validate_age(age)
+
     # Calculate timestamps from age
     from_timestamp = datetime.now(UTC) - timedelta(minutes=age)
 
     try:
-        # Use the fetch_sessions method provided by the Langfuse SDK
-        response = state.langfuse_client.fetch_sessions(from_timestamp=from_timestamp, page=page, limit=limit)
+        session_items, pagination = _list_sessions(
+            state.langfuse_client,
+            limit=limit,
+            page=page,
+            from_timestamp=from_timestamp,
+        )
 
         # Convert response to a serializable format
-        raw_sessions = [session.dict() if hasattr(session, "dict") else session for session in response.data]
+        raw_sessions = [_sdk_object_to_python(session) for session in session_items]
 
         # Process based on output mode
         base_filename_prefix = "sessions"
-        sessions = process_data_with_mode(raw_sessions, output_mode, base_filename_prefix, state)
+        mode = _ensure_output_mode(output_mode)
+        sessions_payload, file_meta = process_data_with_mode(raw_sessions, mode, base_filename_prefix, state)
 
-        logger.info(f"Found {len(raw_sessions)} sessions, returning with output_mode={output_mode}")
-        return {"data": sessions, "metadata": {"item_count": len(raw_sessions), "file_path": None, "file_info": None}}
+        logger.info(f"Found {len(raw_sessions)} sessions, returning with output_mode={mode}")
+
+        if mode == OutputMode.FULL_JSON_STRING:
+            return sessions_payload
+
+        metadata_block = {"item_count": len(raw_sessions), "file_path": None, "file_info": None}
+        if pagination.get("next_page") is not None:
+            metadata_block["next_page"] = pagination["next_page"]
+        if pagination.get("total") is not None:
+            metadata_block["total"] = pagination["total"]
+        if file_meta:
+            metadata_block.update(file_meta)
+
+        return {"data": sessions_payload, "metadata": metadata_block}
     except Exception as e:
         logger.error(f"Error fetching sessions: {str(e)}")
         logger.exception(e)
@@ -1136,18 +1511,36 @@ async def get_session_details(
 
     try:
         # Fetch traces with this session ID
-        response = state.langfuse_client.fetch_traces(
+        trace_items, pagination = _list_traces(
+            state.langfuse_client,
+            limit=50,
+            page=1,
+            include_observations=include_observations,
+            tags=None,
+            from_timestamp=datetime.fromtimestamp(0, tz=UTC),
+            name=None,
+            user_id=None,
             session_id=session_id,
-            limit=50,  # Get a reasonable number of traces for this session
+            metadata=None,
         )
 
         # If no traces were found, return an empty dict
-        if not response.data:
+        mode = _ensure_output_mode(output_mode)
+
+        if not trace_items:
             logger.info(f"No session found with ID: {session_id}")
-            return {"id": session_id, "traces": [], "found": False}
+            empty_session = {"id": session_id, "traces": [], "trace_count": 0, "found": False}
+            processed_session, file_meta = process_data_with_mode(empty_session, mode, f"session_{session_id}", state)
+            if mode == OutputMode.FULL_JSON_STRING:
+                return processed_session
+
+            metadata_block = {"item_count": 0, "file_path": None, "file_info": None}
+            if file_meta:
+                metadata_block.update(file_meta)
+            return {"data": processed_session, "metadata": metadata_block}
 
         # Convert traces to a serializable format
-        raw_traces = [trace.dict() if hasattr(trace, "dict") else trace for trace in response.data]
+        raw_traces = [_sdk_object_to_python(trace) for trace in trace_items]
 
         # If include_observations is True, fetch and embed the full observation objects
         if include_observations and raw_traces:
@@ -1156,13 +1549,10 @@ async def get_session_details(
                 logger.info(f"Fetching full observation details for {total_observations} observations across {len(raw_traces)} traces")
                 await _embed_observations_in_traces(state, raw_traces)
 
-        # Process traces based on output mode
-        processed_traces = process_data_with_mode(raw_traces, output_mode, f"session_{session_id}_traces", state)
-
         # Create a session object with all traces that have this session ID
         session = {
             "id": session_id,
-            "traces": processed_traces,
+            "traces": raw_traces,
             "trace_count": len(raw_traces),
             "first_timestamp": raw_traces[0].get("timestamp") if raw_traces else None,
             "last_timestamp": raw_traces[-1].get("timestamp") if raw_traces else None,
@@ -1171,13 +1561,20 @@ async def get_session_details(
         }
 
         # Process the final session object based on output mode
-        result = process_data_with_mode(session, output_mode, f"session_{session_id}", state)
+        result, file_meta = process_data_with_mode(session, mode, f"session_{session_id}", state)
 
         logger.info(
-            f"Found session {session_id} with {len(raw_traces)} traces, returning with output_mode={output_mode}, "
+            f"Found session {session_id} with {len(raw_traces)} traces, returning with output_mode={mode}, "
             f"include_observations={include_observations}"
         )
-        return {"data": result, "metadata": {"file_path": None, "file_info": None}}
+        if mode == OutputMode.FULL_JSON_STRING:
+            return result
+
+        metadata_block = {"item_count": 1, "file_path": None, "file_info": None}
+        if file_meta:
+            metadata_block.update(file_meta)
+
+        return {"data": result, "metadata": metadata_block}
     except Exception as e:
         logger.error(f"Error getting session {session_id}: {str(e)}")
         logger.exception(e)
@@ -1187,7 +1584,7 @@ async def get_session_details(
 async def get_user_sessions(
     ctx: Context,
     user_id: str = Field(..., description="The ID of the user to retrieve sessions for"),
-    age: int = Field(..., description="Minutes ago to start looking (e.g., 1440 for 24 hours)"),
+    age: ValidatedAge = Field(..., description="Minutes ago to start looking (e.g., 1440 for 24 hours)"),
     include_observations: bool = Field(
         False,
         description=(
@@ -1231,24 +1628,30 @@ async def get_user_sessions(
     """
     state = cast(MCPState, ctx.request_context.lifespan_context)
 
+    age = validate_age(age)
+
     # Calculate timestamp from age
     from_timestamp = datetime.now(UTC) - timedelta(minutes=age)
 
     try:
+        mode = _ensure_output_mode(output_mode)
+
         # Fetch traces for this user
-        response = state.langfuse_client.fetch_traces(
-            user_id=user_id,
+        trace_items, pagination = _list_traces(
+            state.langfuse_client,
+            limit=100,
+            page=1,
+            include_observations=include_observations,
+            tags=None,
             from_timestamp=from_timestamp,
-            limit=100,  # Get a reasonable number of traces
+            name=None,
+            user_id=user_id,
+            session_id=None,
+            metadata=None,
         )
 
-        # If no traces were found, return an empty list
-        if not response.data:
-            logger.info(f"No sessions found for user: {user_id}")
-            return []
-
         # Convert traces to a serializable format
-        raw_traces = [trace.dict() if hasattr(trace, "dict") else trace for trace in response.data]
+        raw_traces = [_sdk_object_to_python(trace) for trace in trace_items]
 
         # If include_observations is True, fetch and embed the full observation objects
         if include_observations and raw_traces:
@@ -1257,12 +1660,9 @@ async def get_user_sessions(
                 logger.info(f"Fetching full observation details for {total_observations} observations across {len(raw_traces)} traces")
                 await _embed_observations_in_traces(state, raw_traces)
 
-        # Process traces based on output mode
-        traces = process_data_with_mode(raw_traces, OutputMode.COMPACT, f"user_{user_id}_traces", state)
-
         # Group traces by session_id
-        sessions_dict = {}
-        for trace in traces:
+        sessions_dict: dict[str, dict[str, Any]] = {}
+        for trace in raw_traces:
             session_id = trace.get("session_id")
             if not session_id:
                 continue
@@ -1295,14 +1695,29 @@ async def get_user_sessions(
         # Sort sessions by most recent last_timestamp
         sessions.sort(key=lambda x: x["last_timestamp"] if x["last_timestamp"] else "", reverse=True)
 
-        # Process the final sessions list based on output mode
-        result = process_data_with_mode(sessions, output_mode, f"user_{user_id}_sessions", state)
+        processed_sessions, file_meta = process_data_with_mode(sessions, mode, f"user_{user_id}_sessions", state)
 
         logger.info(
-            f"Found {len(sessions)} sessions for user {user_id}, returning with output_mode={output_mode}, "
+            f"Found {len(sessions)} sessions for user {user_id}, returning with output_mode={mode}, "
             f"include_observations={include_observations}"
         )
-        return {"data": result, "metadata": {"item_count": len(sessions), "file_path": None, "file_info": None}}
+
+        if mode == OutputMode.FULL_JSON_STRING:
+            return processed_sessions
+
+        metadata_block = {
+            "item_count": len(sessions),
+            "file_path": None,
+            "file_info": None,
+        }
+        if pagination.get("next_page") is not None:
+            metadata_block["next_page"] = pagination["next_page"]
+        if pagination.get("total") is not None:
+            metadata_block["total"] = pagination["total"]
+        if file_meta:
+            metadata_block.update(file_meta)
+
+        return {"data": processed_sessions, "metadata": metadata_block}
     except Exception as e:
         logger.error(f"Error getting sessions for user {user_id}: {str(e)}")
         logger.exception(e)
@@ -1320,7 +1735,7 @@ async def find_exceptions(
             "How to group exceptions - 'file' groups by filename, 'function' groups by function name, or 'type' groups by exception type"
         ),
     ),
-) -> list[ExceptionCount]:
+) -> ResponseDict:
     """Get exception counts grouped by file path, function, or type.
 
     Args:
@@ -1334,71 +1749,69 @@ async def find_exceptions(
     """
     state = cast(MCPState, ctx.request_context.lifespan_context)
 
+    age = validate_age(age)
+
     # Calculate from_timestamp based on age
     from_timestamp = datetime.now(UTC) - timedelta(minutes=age)
     to_timestamp = datetime.now(UTC)
 
     try:
         # Fetch all SPAN observations since they may contain exceptions
-        response = state.langfuse_client.fetch_observations(
-            type="SPAN",
+        observation_items, _ = _list_observations(
+            state.langfuse_client,
+            limit=100,
+            page=1,
             from_start_time=from_timestamp,
             to_start_time=to_timestamp,
-            limit=100,  # Adjust based on your needs
+            obs_type="SPAN",
+            name=None,
+            user_id=None,
+            trace_id=None,
+            parent_observation_id=None,
+            metadata=None,
         )
 
         # Process observations to find and group exceptions
         exception_groups = Counter()
 
-        for observation in response.data:
-            # Check if this observation has exception events
-            if hasattr(observation, "events"):
-                for event in observation.events:
-                    if not isinstance(event, dict):
-                        event_dict = event.dict() if hasattr(event, "dict") else {}
-                    else:
-                        event_dict = event
+        for observation in (_sdk_object_to_python(obs) for obs in observation_items):
+            events = observation.get("events", []) if isinstance(observation, dict) else []
+            if not events:
+                continue
 
-                    # Check if this is an exception event
-                    if event_dict.get("attributes", {}).get("exception.type"):
-                        # Get the grouping key based on group_by parameter
-                        if group_by == "file":
-                            # Group by file path from metadata
-                            if hasattr(observation, "metadata") and observation.metadata:
-                                meta = observation.metadata
-                                if isinstance(meta, dict) and meta.get("code.filepath"):
-                                    group_key = meta.get("code.filepath")
-                                else:
-                                    group_key = "unknown_file"
-                            else:
-                                group_key = "unknown_file"
-                        elif group_by == "function":
-                            # Group by function name from metadata
-                            if hasattr(observation, "metadata") and observation.metadata:
-                                meta = observation.metadata
-                                if isinstance(meta, dict) and meta.get("code.function"):
-                                    group_key = meta.get("code.function")
-                                else:
-                                    group_key = "unknown_function"
-                            else:
-                                group_key = "unknown_function"
-                        elif group_by == "type":
-                            # Group by exception type
-                            group_key = event_dict.get("attributes", {}).get("exception.type", "unknown_exception")
-                        else:
-                            group_key = "unknown"
+            for event in events:
+                event_dict = event if isinstance(event, dict) else _sdk_object_to_python(event)
 
-                        # Increment the counter for this group
-                        exception_groups[group_key] += 1
+                # Check if this is an exception event
+                if not event_dict.get("attributes", {}).get("exception.type"):
+                    continue
+
+                # Get the grouping key based on group_by parameter
+                if group_by == "file":
+                    meta = observation.get("metadata", {}) if isinstance(observation, dict) else {}
+                    group_key = meta.get("code.filepath", "unknown_file")
+                elif group_by == "function":
+                    meta = observation.get("metadata", {}) if isinstance(observation, dict) else {}
+                    group_key = meta.get("code.function", "unknown_function")
+                elif group_by == "type":
+                    group_key = event_dict.get("attributes", {}).get("exception.type", "unknown_exception")
+                else:
+                    group_key = "unknown"
+
+                # Increment the counter for this group
+                exception_groups[group_key] += 1
 
         # Convert counter to list of ExceptionCount objects
         results = [
             ExceptionCount(group=group, count=count)
-            for group, count in exception_groups.most_common(50)  # Limit to 50 most common
+            for group, count in exception_groups.most_common(50)
         ]
 
-        logger.info(f"Found {len(results)} exception groups")
-        return results
+        data = [item.model_dump() for item in results]
+        metadata_block = {"item_count": len(data)}
+
+        logger.info(f"Found {len(data)} exception groups")
+        return {"data": data, "metadata": metadata_block}
     except Exception as e:
         logger.error(f"Error finding exceptions: {str(e)}")
         logger.exception(e)
@@ -1437,53 +1850,59 @@ async def find_exceptions_in_file(
     """
     state = cast(MCPState, ctx.request_context.lifespan_context)
 
+    age = validate_age(age)
+
     # Calculate from_timestamp based on age
     from_timestamp = datetime.now(UTC) - timedelta(minutes=age)
     to_timestamp = datetime.now(UTC)
 
     try:
         # Fetch all SPAN observations since they may contain exceptions
-        response = state.langfuse_client.fetch_observations(
-            type="SPAN", from_start_time=from_timestamp, to_start_time=to_timestamp, limit=100
+        observation_items, _ = _list_observations(
+            state.langfuse_client,
+            limit=100,
+            page=1,
+            from_start_time=from_timestamp,
+            to_start_time=to_timestamp,
+            obs_type="SPAN",
+            name=None,
+            user_id=None,
+            trace_id=None,
+            parent_observation_id=None,
+            metadata=None,
         )
 
         # Process observations to find exceptions in the specified file
         exceptions = []
 
-        for observation in response.data:
-            # Check if this observation is related to the specified file
-            file_matches = False
-            if hasattr(observation, "metadata") and observation.metadata:
-                meta = observation.metadata
-                if isinstance(meta, dict) and meta.get("code.filepath") == filepath:
-                    file_matches = True
-
-            if not file_matches:
+        for observation in (_sdk_object_to_python(obs) for obs in observation_items):
+            metadata = observation.get("metadata", {}) if isinstance(observation, dict) else {}
+            if metadata.get("code.filepath") != filepath:
                 continue
 
-            # Check if this observation has exception events
-            if hasattr(observation, "events"):
-                for event in observation.events:
-                    if not isinstance(event, dict):
-                        event_dict = event.dict() if hasattr(event, "dict") else {}
-                    else:
-                        event_dict = event
+            events = observation.get("events", []) if isinstance(observation, dict) else []
+            if not events:
+                continue
 
-                    # Check if this is an exception event
-                    if event_dict.get("attributes", {}).get("exception.type"):
-                        # Extract exception details
-                        exception_info = {
-                            "observation_id": observation.id if hasattr(observation, "id") else "unknown",
-                            "trace_id": observation.trace_id if hasattr(observation, "trace_id") else "unknown",
-                            "timestamp": observation.start_time if hasattr(observation, "start_time") else "unknown",
-                            "exception_type": event_dict.get("attributes", {}).get("exception.type", "unknown"),
-                            "exception_message": event_dict.get("attributes", {}).get("exception.message", ""),
-                            "exception_stacktrace": event_dict.get("attributes", {}).get("exception.stacktrace", ""),
-                            "function": meta.get("code.function", "unknown") if isinstance(meta, dict) else "unknown",
-                            "line_number": meta.get("code.lineno", "unknown") if isinstance(meta, dict) else "unknown",
-                        }
+            for event in events:
+                event_dict = event if isinstance(event, dict) else _sdk_object_to_python(event)
 
-                        exceptions.append(exception_info)
+                # Check if this is an exception event
+                if not event_dict.get("attributes", {}).get("exception.type"):
+                    continue
+
+                exception_info = {
+                    "observation_id": observation.get("id", "unknown") if isinstance(observation, dict) else "unknown",
+                    "trace_id": observation.get("trace_id", "unknown") if isinstance(observation, dict) else "unknown",
+                    "timestamp": observation.get("start_time", "unknown") if isinstance(observation, dict) else "unknown",
+                    "exception_type": event_dict.get("attributes", {}).get("exception.type", "unknown"),
+                    "exception_message": event_dict.get("attributes", {}).get("exception.message", ""),
+                    "exception_stacktrace": event_dict.get("attributes", {}).get("exception.stacktrace", ""),
+                    "function": metadata.get("code.function", "unknown"),
+                    "line_number": metadata.get("code.lineno", "unknown"),
+                }
+
+                exceptions.append(exception_info)
 
         # Sort exceptions by timestamp (newest first)
         exceptions.sort(key=lambda x: x["timestamp"] if isinstance(x["timestamp"], str) else "", reverse=True)
@@ -1491,12 +1910,24 @@ async def find_exceptions_in_file(
         # Only take the top 10 exceptions
         top_exceptions = exceptions[:10]
 
-        # Process based on output mode
+        mode = _ensure_output_mode(output_mode)
         base_filename_prefix = f"exceptions_{os.path.basename(filepath)}"
-        processed_exceptions = process_data_with_mode(top_exceptions, output_mode, base_filename_prefix, state)
+        processed_exceptions, file_meta = process_data_with_mode(top_exceptions, mode, base_filename_prefix, state)
 
-        logger.info(f"Found {len(exceptions)} exceptions in file {filepath}, returning with output_mode={output_mode}")
-        return {"data": processed_exceptions, "metadata": {"file_path": filepath, "file_info": None}}
+        logger.info(f"Found {len(exceptions)} exceptions in file {filepath}, returning with output_mode={mode}")
+
+        if mode == OutputMode.FULL_JSON_STRING:
+            return processed_exceptions
+
+        metadata_block = {
+            "file_path": filepath,
+            "item_count": len(top_exceptions),
+            "file_info": None,
+        }
+        if file_meta:
+            metadata_block.update(file_meta)
+
+        return {"data": processed_exceptions, "metadata": metadata_block}
     except Exception as e:
         logger.error(f"Error finding exceptions in file {filepath}: {str(e)}")
         logger.exception(e)
@@ -1535,76 +1966,108 @@ async def get_exception_details(
 
     try:
         # First get the trace details
-        trace_response = state.langfuse_client.fetch_trace(trace_id)
-        if not trace_response or not trace_response.data:
+        trace = _get_trace(state.langfuse_client, trace_id, include_observations=False)
+        trace_data = _sdk_object_to_python(trace)
+        mode = _ensure_output_mode(output_mode)
+        if not trace_data:
             logger.warning(f"Trace not found: {trace_id}")
-            return []
+            empty_payload, file_meta = process_data_with_mode([], mode, f"exceptions_trace_{trace_id}", state)
+            if mode == OutputMode.FULL_JSON_STRING:
+                return empty_payload
+            metadata_block = {"item_count": 0, "file_path": None, "file_info": None}
+            if file_meta:
+                metadata_block.update(file_meta)
+            return {"data": empty_payload, "metadata": metadata_block}
 
         # Get all observations for this trace
-        observations_response = state.langfuse_client.fetch_observations(
+        observation_items, _ = _list_observations(
+            state.langfuse_client,
+            limit=100,
+            page=1,
+            from_start_time=datetime.fromtimestamp(0, tz=UTC),
+            to_start_time=None,
+            obs_type=None,
+            name=None,
+            user_id=None,
             trace_id=trace_id,
-            limit=100,  # Get a reasonable number of observations
+            parent_observation_id=None,
+            metadata=None,
         )
 
-        if not observations_response or not observations_response.data:
+        if not observation_items:
             logger.warning(f"No observations found for trace: {trace_id}")
-            return []
+            empty_payload, file_meta = process_data_with_mode([], mode, f"exceptions_trace_{trace_id}", state)
+            if mode == OutputMode.FULL_JSON_STRING:
+                return empty_payload
+            metadata_block = {"item_count": 0, "file_path": None, "file_info": None}
+            if file_meta:
+                metadata_block.update(file_meta)
+            return {"data": empty_payload, "metadata": metadata_block}
 
         # Filter observations if span_id is provided
+        normalized_observations = [_sdk_object_to_python(obs) for obs in observation_items]
         if span_id:
-            filtered_observations = [obs for obs in observations_response.data if hasattr(obs, "id") and obs.id == span_id]
+            filtered_observations = [obs for obs in normalized_observations if obs.get("id") == span_id]
         else:
-            filtered_observations = observations_response.data
+            filtered_observations = normalized_observations
 
         # Process observations to find exceptions
         exceptions = []
 
         for observation in filtered_observations:
-            # Check if this observation has exception events
-            if hasattr(observation, "events"):
-                for event in observation.events:
-                    if not isinstance(event, dict):
-                        event_dict = event.dict() if hasattr(event, "dict") else {}
-                    else:
-                        event_dict = event
+            events = observation.get("events", []) if isinstance(observation, dict) else []
+            if not events:
+                continue
 
-                    # Check if this is an exception event
-                    if event_dict.get("attributes", {}).get("exception.type"):
-                        # Get metadata for additional context
-                        metadata = {}
-                        if hasattr(observation, "metadata") and observation.metadata:
-                            if isinstance(observation.metadata, dict):
-                                metadata = observation.metadata
+            for event in events:
+                event_dict = event if isinstance(event, dict) else _sdk_object_to_python(event)
 
-                        # Extract exception details
-                        exception_info = {
-                            "observation_id": observation.id if hasattr(observation, "id") else "unknown",
-                            "observation_name": observation.name if hasattr(observation, "name") else "unknown",
-                            "observation_type": observation.type if hasattr(observation, "type") else "unknown",
-                            "timestamp": observation.start_time if hasattr(observation, "start_time") else "unknown",
-                            "exception_type": event_dict.get("attributes", {}).get("exception.type", "unknown"),
-                            "exception_message": event_dict.get("attributes", {}).get("exception.message", ""),
-                            "exception_stacktrace": event_dict.get("attributes", {}).get("exception.stacktrace", ""),
-                            "filepath": metadata.get("code.filepath", "unknown"),
-                            "function": metadata.get("code.function", "unknown"),
-                            "line_number": metadata.get("code.lineno", "unknown"),
-                            "event_id": event_dict.get("id", "unknown"),
-                            "event_name": event_dict.get("name", "unknown"),
-                        }
+                # Check if this is an exception event
+                if not event_dict.get("attributes", {}).get("exception.type"):
+                    continue
 
-                        exceptions.append(exception_info)
+                metadata = observation.get("metadata", {}) if isinstance(observation, dict) else {}
+
+                # Extract exception details
+                exception_info = {
+                    "observation_id": observation.get("id", "unknown"),
+                    "observation_name": observation.get("name", "unknown"),
+                    "observation_type": observation.get("type", "unknown"),
+                    "timestamp": observation.get("start_time", "unknown"),
+                    "exception_type": event_dict.get("attributes", {}).get("exception.type", "unknown"),
+                    "exception_message": event_dict.get("attributes", {}).get("exception.message", ""),
+                    "exception_stacktrace": event_dict.get("attributes", {}).get("exception.stacktrace", ""),
+                    "filepath": metadata.get("code.filepath", "unknown"),
+                    "function": metadata.get("code.function", "unknown"),
+                    "line_number": metadata.get("code.lineno", "unknown"),
+                    "event_id": event_dict.get("id", "unknown"),
+                    "event_name": event_dict.get("name", "unknown"),
+                }
+
+                exceptions.append(exception_info)
 
         # Sort exceptions by timestamp (newest first)
         exceptions.sort(key=lambda x: x["timestamp"] if isinstance(x["timestamp"], str) else "", reverse=True)
 
-        # Process based on output mode
         base_filename_prefix = f"exceptions_trace_{trace_id}"
         if span_id:
             base_filename_prefix += f"_span_{span_id}"
-        processed_exceptions = process_data_with_mode(exceptions, output_mode, base_filename_prefix, state)
+        processed_exceptions, file_meta = process_data_with_mode(exceptions, mode, base_filename_prefix, state)
 
-        logger.info(f"Found {len(exceptions)} exceptions in trace {trace_id}, returning with output_mode={output_mode}")
-        return {"data": processed_exceptions, "metadata": {"file_path": None, "file_info": None}}
+        logger.info(f"Found {len(exceptions)} exceptions in trace {trace_id}, returning with output_mode={mode}")
+
+        if mode == OutputMode.FULL_JSON_STRING:
+            return processed_exceptions
+
+        metadata_block = {
+            "item_count": len(exceptions),
+            "file_path": None,
+            "file_info": None,
+        }
+        if file_meta:
+            metadata_block.update(file_meta)
+
+        return {"data": processed_exceptions, "metadata": metadata_block}
     except Exception as e:
         logger.error(f"Error getting exception details for trace {trace_id}: {str(e)}")
         logger.exception(e)
@@ -1628,17 +2091,26 @@ async def get_error_count(
     """
     state = cast(MCPState, ctx.request_context.lifespan_context)
 
+    age = validate_age(age)
+
     # Calculate from_timestamp based on age
     from_timestamp = datetime.now(UTC) - timedelta(minutes=age)
     to_timestamp = datetime.now(UTC)
 
     try:
         # Fetch all SPAN observations since they may contain exceptions
-        response = state.langfuse_client.fetch_observations(
-            type="SPAN",
+        observation_items, _ = _list_observations(
+            state.langfuse_client,
+            limit=100,
+            page=1,
             from_start_time=from_timestamp,
             to_start_time=to_timestamp,
-            limit=100,  # Limit to 100 as per API constraints
+            obs_type="SPAN",
+            name=None,
+            user_id=None,
+            trace_id=None,
+            parent_observation_id=None,
+            metadata=None,
         )
 
         # Count traces and observations with exceptions
@@ -1646,30 +2118,21 @@ async def get_error_count(
         observations_with_exceptions = 0
         total_exceptions = 0
 
-        for observation in response.data:
-            has_exception = False
-            exception_count = 0
+        for observation in (_sdk_object_to_python(obs) for obs in observation_items):
+            events = observation.get("events", []) if isinstance(observation, dict) else []
+            if not events:
+                continue
 
-            # Check if this observation has exception events
-            if hasattr(observation, "events"):
-                for event in observation.events:
-                    if not isinstance(event, dict):
-                        event_dict = event.dict() if hasattr(event, "dict") else {}
-                    else:
-                        event_dict = event
+            exception_count = sum(1 for event in events if _sdk_object_to_python(event).get("attributes", {}).get("exception.type"))
+            if exception_count == 0:
+                continue
 
-                    # Check if this is an exception event
-                    if event_dict.get("attributes", {}).get("exception.type"):
-                        has_exception = True
-                        exception_count += 1
+            observations_with_exceptions += 1
+            total_exceptions += exception_count
 
-            if has_exception:
-                observations_with_exceptions += 1
-                total_exceptions += exception_count
-
-                # Add the trace ID to our set
-                if hasattr(observation, "trace_id") and observation.trace_id:
-                    trace_ids_with_exceptions.add(observation.trace_id)
+            trace_id = observation.get("trace_id") if isinstance(observation, dict) else None
+            if trace_id:
+                trace_ids_with_exceptions.add(trace_id)
 
         result = {
             "age_minutes": age,
@@ -1832,10 +2295,9 @@ def app_factory(public_key: str, secret_key: str, host: str, cache_size: int = 1
                 secret_key=secret_key,
                 host=host,
                 debug=False,  # Disable debug mode since we're only querying
-                threads=1,  # Reduce thread count since we're not sending telemetry
+                tracing_enabled=False,  # Disable instrumentation since we're querying data only
                 flush_at=0,  # Disable automatic flushing since we're not sending data
-                flush_interval=None,  # Disable flush interval
-                enabled=True,  # Keep enabled for API queries
+                flush_interval=None,  # Disable flush interval for pull-only usage
             ),
             observation_cache=LRUCache(maxsize=cache_size),
             file_to_observations_map=LRUCache(maxsize=cache_size),
@@ -1874,26 +2336,22 @@ def app_factory(public_key: str, secret_key: str, host: str, cache_size: int = 1
 
 def main():
     """Entry point for the langfuse_mcp package."""
+
+    _load_env_file()
+    env_defaults = _read_env_defaults()
+    parser = _build_arg_parser(env_defaults)
+    args = parser.parse_args()
+
+    global logger
+    logger = configure_logging(args.log_level, args.log_to_console)
     logger.info("=" * 80)
     logger.info(f"Starting Langfuse MCP v{__version__}")
     logger.info(f"Python executable: {sys.executable}")
     logger.info("=" * 80)
-
-    parser = argparse.ArgumentParser(description="Langfuse MCP Server")
-    parser.add_argument("--public-key", type=str, required=True, help="Langfuse public key")
-    parser.add_argument("--secret-key", type=str, required=True, help="Langfuse secret key")
-    parser.add_argument("--host", type=str, default="https://cloud.langfuse.com", help="Langfuse host URL")
-    parser.add_argument("--cache-size", type=int, default=100, help="Size of LRU caches used for caching data")
-    parser.add_argument(
-        "--dump-dir",
-        type=str,
-        default="/tmp/langfuse_mcp_dumps",
-        help=(
-            "Directory to save full JSON dumps when 'output_mode' is 'full_json_file'. The directory will be created if it doesn't exist."
-        ),
+    logger.info(
+        "Environment defaults loaded: %s",
+        {k: ("***" if "key" in k else v) for k, v in env_defaults.items()},
     )
-
-    args = parser.parse_args()
 
     # Create dump directory if it doesn't exist
     if args.dump_dir:

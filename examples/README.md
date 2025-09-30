@@ -20,10 +20,5 @@ To run the demo client:
 uv run examples/langfuse_client_demo.py --public-key YOUR_PUBLIC_KEY --secret-key YOUR_SECRET_KEY
 ```
 
-Or use the convenience wrapper:
-
-```bash
-uv run run_mcp.py
-```
 
 The wrapper will use environment variables (`LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, and `LANGFUSE_HOST`) if available. 

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Migrated Langfuse MCP server to use the Langfuse 3.x Python SDK, replacing deprecated v2 fetch_* helpers with the `langfuse.api.*` resource clients.
+- Updated test doubles and unit tests to model the v3 API surface and ensure compatibility going forward.
+- MCP CLI now reads Langfuse credentials (`public_key`, `secret_key`, `host`) from a `.env` file or environment variables by default, keeping CLI flags optional.
+- Normalized output mode handling, tool envelopes, and logging configuration; added CLI options for log level/console output and standardized responses across all tools.
+- Docker image installs the local repository (`pip install .`) so containers run the same code under development instead of the last PyPI release, and now bundles `git` so dynamic versioning works during image builds.
+- README now documents how to execute the working tree with `uv run --from /path/to/langfuse-mcp` and clarifies why Docker builds should come from the local checkout.
+
+### Removed
+- Dropped the temporary Langfuse v2 pin in favour of depending on `langfuse>=3.0.0`.
+
 ## [0.1.8] - 2025-01-05
 
 ### Added
