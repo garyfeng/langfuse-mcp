@@ -120,9 +120,10 @@ docker run --rm -i \
   -e LANGFUSE_MCP_LOG_FILE=/logs/langfuse_mcp.log \
   -v "$(pwd)/logs:/logs" \
   langfuse-logs-mcp
+```
 
 > **Why no `-t`?** Allocating a pseudo-TTY can interfere with MCP stdio clients. Use `-i` only so the server communicates over plain stdin/stdout.
-```
+
 
 ## Configuration with MCP clients
 
