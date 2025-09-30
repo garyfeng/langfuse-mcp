@@ -1,9 +1,7 @@
 """Basic tests for langfuse-mcp package."""
 
-import sys
-
 import logging
-import os
+import sys
 
 import pytest
 

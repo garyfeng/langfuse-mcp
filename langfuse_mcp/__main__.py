@@ -51,7 +51,6 @@ file_handler.setFormatter(formatter)
 
 def configure_logging(log_level: str, log_to_console: bool) -> logging.Logger:
     """Configure application logging based on CLI flags."""
-
     level = logging.getLevelName(log_level.upper()) if isinstance(log_level, str) else logging.INFO
 
     root_logger = logging.getLogger()
@@ -155,7 +154,6 @@ ResponseDict = dict[str, Any]
 
 def _ensure_output_mode(mode: OUTPUT_MODE_LITERAL | OutputMode | str | OutputMode) -> OutputMode:
     """Normalize user-provided output mode values."""
-
     if isinstance(mode, OutputMode):
         return mode
 
@@ -168,7 +166,6 @@ def _ensure_output_mode(mode: OUTPUT_MODE_LITERAL | OutputMode | str | OutputMod
 
 def _load_env_file(env_path: Path | None = None) -> None:
     """Load environment variables from a `.env` file if present."""
-
     if env_path is None:
         env_path = Path(__file__).resolve().parent.parent / ".env"
 
@@ -194,7 +191,6 @@ def _load_env_file(env_path: Path | None = None) -> None:
 
 def _read_env_defaults() -> dict[str, Any]:
     """Read environment defaults used by the CLI."""
-
     return {
         "public_key": os.getenv("LANGFUSE_PUBLIC_KEY"),
         "secret_key": os.getenv("LANGFUSE_SECRET_KEY"),
@@ -206,7 +202,6 @@ def _read_env_defaults() -> dict[str, Any]:
 
 def _build_arg_parser(env_defaults: dict[str, Any]) -> argparse.ArgumentParser:
     """Construct the CLI argument parser using provided defaults."""
-
     parser = argparse.ArgumentParser(description="Langfuse MCP Server")
     parser.add_argument(
         "--public-key",
@@ -257,7 +252,6 @@ def _build_arg_parser(env_defaults: dict[str, Any]) -> argparse.ArgumentParser:
 
 def _sdk_object_to_python(obj: Any) -> Any:
     """Convert Langfuse SDK models (pydantic/dataclasses) into plain Python types."""
-
     if obj is None:
         return None
 
@@ -289,7 +283,6 @@ def _sdk_object_to_python(obj: Any) -> Any:
 
 def _extract_items_from_response(response: Any) -> tuple[list[Any], dict[str, Any]]:
     """Normalize Langfuse SDK list responses into items and pagination metadata."""
-
     if response is None:
         return [], {}
 
@@ -317,7 +310,6 @@ def _extract_items_from_response(response: Any) -> tuple[list[Any], dict[str, An
 
 def _metadata_matches(item: Any, metadata_filter: dict[str, Any]) -> bool:
     """Determine whether the provided item matches the requested metadata filter."""
-
     item_dict = _sdk_object_to_python(item)
     metadata = item_dict.get("metadata") or {}
     return all(metadata.get(key) == value for key, value in metadata_filter.items())
@@ -337,7 +329,6 @@ def _list_traces(
     metadata: dict[str, Any] | None,
 ) -> tuple[list[Any], dict[str, Any]]:
     """Fetch traces via the Langfuse SDK handling both v2 and v3 signatures."""
-
     if not hasattr(langfuse_client, "api") or not hasattr(langfuse_client.api, "trace"):
         raise RuntimeError("Unsupported Langfuse client: no trace listing method available")
 
@@ -386,7 +377,6 @@ def _list_observations(
     metadata: dict[str, Any] | None,
 ) -> tuple[list[Any], dict[str, Any]]:
     """Fetch observations via the Langfuse SDK handling v2/v3 differences."""
-
     if not hasattr(langfuse_client, "api") or not hasattr(langfuse_client.api, "observations"):
         raise RuntimeError("Unsupported Langfuse client: no observation listing method available")
 
@@ -415,7 +405,6 @@ def _list_observations(
 
 def _get_observation(langfuse_client: Any, observation_id: str) -> Any:
     """Fetch a single observation using either the v3 or v2 SDK surface."""
-
     if hasattr(langfuse_client, "api") and hasattr(langfuse_client.api, "observations"):
         return langfuse_client.api.observations.get(observation_id=observation_id)
 
@@ -432,7 +421,6 @@ def _get_trace(langfuse_client: Any, trace_id: str, include_observations: bool) 
     Note: Some Langfuse SDK versions do not support a `fields` selector on `get()`. We avoid
     passing `fields` here and rely on embedding observations separately when requested.
     """
-
     if not hasattr(langfuse_client, "api") or not hasattr(langfuse_client.api, "trace"):
         raise RuntimeError("Unsupported Langfuse client: no trace getter available")
 
@@ -447,7 +435,6 @@ def _list_sessions(
     from_timestamp: datetime,
 ) -> tuple[list[Any], dict[str, Any]]:
     """Fetch sessions via the Langfuse SDK handling v2/v3 differences."""
-
     if not hasattr(langfuse_client, "api") or not hasattr(langfuse_client.api, "sessions"):
         raise RuntimeError("Unsupported Langfuse client: no session listing method available")
 
@@ -684,8 +671,6 @@ def serialize_full_json_string(data: Any) -> str:
     Returns:
         JSON string representation of the data
     """
-    metadata = None  # Metadata filtering not exposed for observations tool currently
-
     try:
         # Use default=str to handle datetime and other non-serializable objects
         return json.dumps(data, default=str)
@@ -1116,9 +1101,7 @@ async def fetch_traces(
         base_filename_prefix = "traces"
         processed_data, file_meta = process_data_with_mode(raw_traces, mode, base_filename_prefix, state)
 
-        logger.info(
-            f"Found {len(raw_traces)} traces, returning with output_mode={mode}, include_observations={include_observations}"
-        )
+        logger.info(f"Found {len(raw_traces)} traces, returning with output_mode={mode}, include_observations={include_observations}")
 
         # Return data in the standard response format
         if mode == OutputMode.FULL_JSON_STRING:
@@ -1802,10 +1785,7 @@ async def find_exceptions(
                 exception_groups[group_key] += 1
 
         # Convert counter to list of ExceptionCount objects
-        results = [
-            ExceptionCount(group=group, count=count)
-            for group, count in exception_groups.most_common(50)
-        ]
+        results = [ExceptionCount(group=group, count=count) for group, count in exception_groups.most_common(50)]
 
         data = [item.model_dump() for item in results]
         metadata_block = {"item_count": len(data)}
@@ -2336,7 +2316,6 @@ def app_factory(public_key: str, secret_key: str, host: str, cache_size: int = 1
 
 def main():
     """Entry point for the langfuse_mcp package."""
-
     _load_env_file()
     env_defaults = _read_env_defaults()
     parser = _build_arg_parser(env_defaults)

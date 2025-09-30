@@ -142,7 +142,6 @@ async def run_mcp_tools(public_key: str, secret_key: str, host: str):
 
 def parse_envelope(result):
     """Parse tool response content into data and metadata."""
-
     if not hasattr(result, "content") or not result.content:
         return None, None
 
